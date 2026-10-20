@@ -1,0 +1,19 @@
+# Recognition, measurements and release
+
+Recognition is performed by a vision-capable agent actually inspecting images, not by a JSON validator. Load the unedited baseline and candidate at fit-to-view, then original-pixel paired crops covering every visible plant and all changed materials. Use scripts/review_pairs.py to create those crops and a pending review template; it does not fill in semantic answers. IDs and exact-species notes guide association. Inspect leaf shape, phyllotaxy, rosette/pad/frond structure, bark/branch habit, variegation and flower form. Never assert a cultivar is identifiable from pixels when its traits cannot be seen. Use consistent/high-confidence only when image and source asset/notes together support it; otherwise reject/retain the baseline.
+
+Save review.json:
+- handoff and candidate hashed files; camera_id; baseline_sha256; method image_edit or native_material_only.
+- Native mode: native_before/native_after exports from material_snapshot.py plus render_proof (provenance renderer_export, camera_id, native_scene_sha256, image_sha256).
+- recognition: reviewer vision-capable-agent, baseline_and_candidate_loaded true, original_pixel_crops_loaded true, observations, paired_crop_evidence file references, geometry checks, plants, image_quality improved, quality_observations.
+- geometry checks: pass/fail for wall_runs_returns, bed_borders, paved_landings, stairs_pavers, ground_contact, architecture, camera_crop, no_added_or_missing_plants, cross_view_consistency.
+- plants: one row per native ID with visible_pixels>0. Each has id, expected_species, species_assessment consistent/changed/uncertain, identity_confidence high/medium/low, diagnostic_traits, count_assessment unchanged/changed/uncertain, occlusion_assessment consistent/changed/uncertain, baseline_anchor [x,y], candidate_anchor [x,y], candidate_mask file reference, root_visible boolean, candidate_root when visible, measurement_evidence file reference.
+- candidate_mask is an actual image-recognition segmentation of that specimen in the candidate at full image dimensions. Save the recognition method/evidence; do not copy the baseline ID mask as an alleged candidate segmentation. This is recognized evidence, not a new native object-ID pass. Tiny/ambiguous overlapping plants cannot be silently skipped.
+
+The guard recomputes crown IoU, area change and centroid shift using actual native object IDs versus the candidate recognition mask. It rejects IoU below .98, area change above 2%, or centroid shift above 2 native pixels. Stable recognized anchors also have a 2-pixel ceiling, and a genuinely visible root must stay within 1 native pixel of its projected baseline point. These limits accommodate measurement uncertainty, not permission to move any plant. An occluded root projection is not a visible trunk-base measurement. No deliberate plant movement, addition, removal or species substitution is allowed.
+
+Image edits must preserve every protected-mask RGB pixel exactly; changes belong inside editable material interiors. If the generation tool cannot preserve them, reject the candidate. Do not resize, crop, warp or restore pixels after generation to pass a check. Native mode permits material RGB changes while freezing exported geometry/opacity/cameras/lights and binding the candidate to its actual native render.
+
+Check wall topology separately from realism: uninterrupted runs and returns, full narrow borders, empty paved landings, stair/paver order/gaps and drainage margins. Inspect the whole frame for additions outside old crowns, and compare the camera set together.
+
+Run appearance_guard.py after actual inspection. Its result validates recorded evidence/limits, not automatic taxonomic truth. After two targeted retries, deliver the original validated 3D view as unchanged_baseline and log unfinished appearance work. Never call a fallback photorealistic or a partial batch complete.

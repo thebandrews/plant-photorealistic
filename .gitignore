@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.venv/
+test-output/
+client-output/
+*.blend
+*.blend1
+*.heic

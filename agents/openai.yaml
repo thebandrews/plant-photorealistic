@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plant Photorealistic"
+  short_description: "Appearance cleanup with plant and hardscape drift checks"
+  default_prompt: "Use $plant-photorealistic on this validated render handoff."
