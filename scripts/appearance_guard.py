@@ -12,7 +12,10 @@ def distance(a,b):
     require(all(type(x) in (int,float) and math.isfinite(x) for x in a+b),"Finite image anchors required")
     return math.dist(a,b)
 def check(data,base):
-    require(data.get('schema_version') in (None, 1, 2), 'Unknown appearance review version')
+    require(data.get('schema_version') in (None, 1, 2, 3), 'Unknown appearance review version')
+    if data.get('schema_version') == 3:
+        from photo_composite import check_review
+        return check_review(data, base)
     if data.get("schema_version") == 2:
         return check_v2(data, base)
     return check_legacy(data, base)
@@ -190,6 +193,7 @@ def check_v2(data, base):
     require(not np.array_equal(before, after), "Unchanged view is a fallback, not improved appearance")
     require(vision.get("image_quality") == "improved" and vision.get("quality_observations"), "Actual photographic improvement must be inspected")
     return {"status": "accepted", "camera_id": cid, "method": method, "evidence_counts": counts,
+            "completion_scope": "landscape_appearance_stage", "photo_background_composited": False,
             "classification": "appearance_derivative_visually_checked", "identity_authority": "validated_native_handoff",
             "exact_placement_certification": "Original baseline remains authoritative; synthesized pixels are not newly certified",
             "limitation": "Visual findings are agent judgments; preserved/native evidence does not claim pixel-based cultivar identification"}

@@ -1,6 +1,6 @@
 # Image appearance edit template
 
-Use this route when image-space refinement is useful; prefer native material refinement when available. First inspect the validated render and freeze its appearance plan. Use one view per built-in image-generation call.
+Use this route for the landscape foreground stage when image-space refinement is useful; prefer native material refinement when available. First inspect the validated render and freeze its appearance plan. Use one view per built-in image-generation call. This stage does not complete the skill: subsequently composite the checked landscape over the original site photograph using the photo-integration workflow. Never generate a replacement house or neighborhood.
 
 Primary edit target: the validated native render. Preserve its camera, framing, population, exact species, root positions, sizes, silhouettes, branching, hardscape topology, narrow borders, empty paved landings and current bloom state. Additional native location maps, same-specimen crops, other supplied views and exact-asset references explain identity/materials; they do not authorize a different design.
 
