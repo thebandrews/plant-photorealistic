@@ -14,13 +14,17 @@ Invoke: `Use $plant-photorealistic on this render-handoff.json.`
 
 ```text
 python scripts/handoff.py check /path/to/render-handoff.json
-python scripts/review_pairs.py /path/to/render-handoff.json --camera front --candidate /path/to/candidate.png --out /path/to/new-review
+python scripts/appearance_plan.py /path/to/render-handoff.json --camera front --method image_edit --out /path/to/new-plan
+# Generate an edit of the native render after freezing the plan, then:
+python scripts/compose_candidate.py /path/to/new-plan/plan.json --raw /path/to/raw.png --out /path/to/new-candidate
+python scripts/review_pairs.py /path/to/render-handoff.json --camera front --candidate /path/to/new-candidate/candidate.png --plan /path/to/new-plan/plan.json --out /path/to/new-review
+# Complete actual visual review and attach composite-proof.json before checking:
 python scripts/appearance_guard.py /path/to/review.json
 python -m unittest discover -s scripts -p "test_*.py" -v
 ```
 
-The agent must actually recognize and compare the plants, species traits, positions, silhouettes and hardscape in both images. The scripts recompute mask drift and protected-pixel checks and validate evidence; they do not perform semantic recognition themselves. Unknown species identity, missing plants, changed wall routes, paved borders or planted landings reject a candidate. After bounded retries, the original validated 3D view is retained as the fallback.
+Version 2 reviews inherit species and location from validated native evidence. Every plant is accounted for through native invariants, exact preserved pixels, visual review of edited appearance, or full occlusion. Tiny/overlapping fragments do not require impossible independent cultivar recognition. Image composites use frozen native-derived masks, preserve 8/16-bit protected samples and opacity, and retain raw generation/proof. Local failures can retain individual native regions while other improvements proceed. The agent still inspects changed anatomy/materials and the whole frame for added/missing plants or altered hardscape; scripts do not perform semantic recognition. See the recognition protocol for native-render proof and local `--retain` recovery.
 
-Only native 3D outputs retain exact placement certification. Visually checked image edits remain appearance derivatives. See the [handoff contract](references/handoff.md) and [recognition protocol](references/appearance-review.md).
+Original native renders remain the exact placement authority. Visually checked image edits remain appearance derivatives; unchanged whole-view fallbacks are explicitly nonaccepted. Legacy reviews retain their original contract. See the [handoff contract](references/handoff.md) and [recognition protocol](references/appearance-review.md).
 
 The repository contains reusable workflow code and synthetic tests only, with no client plans, site photos, render assets or planting logs.

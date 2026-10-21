@@ -5,6 +5,8 @@ The native scene must first be saved. A scene/hash alone is not a final-image pr
 """
 import bpy,json,sys,hashlib,array
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from native_contracts import camera_contract, node_settings, opacity_sensitive_rgb
 
 def digest(path):
     h=hashlib.sha256()
@@ -29,6 +31,7 @@ def material_contract(mat,images):
         assert n.type!='GROUP','Expand material node groups before strict snapshot: '+mat.name
         if n.type=='OUTPUT_MATERIAL':assert not n.inputs['Displacement'].is_linked,'True displacement is not allowed in the locked material pass'
         row={'name':n.name,'type':n.bl_idname,'inputs':{}}
+        row['settings']=node_settings(n)
         for sock in n.inputs:
             if not hasattr(sock,'default_value') or (n.type=='BSDF_PRINCIPLED' and sock.name in appearance):continue
             v=sock.default_value
@@ -41,8 +44,11 @@ def material_contract(mat,images):
             im=n.image;key=im.as_pointer()
             if key not in images:
                 values=array.array('f',[0])*len(im.pixels);im.pixels.foreach_get(values)
-                images[key]={'size':list(im.size),'alpha_sha256':hashlib.sha256(values[3::4].tobytes()).hexdigest()}
-            row['image_alpha']=images[key]
+                images[key]={'size':list(im.size),'alpha_sha256':hashlib.sha256(values[3::4].tobytes()).hexdigest(),
+                             'all_channels_sha256':hashlib.sha256(values.tobytes()).hexdigest()}
+            row['image_alpha']={k:v for k,v in images[key].items() if k!='all_channels_sha256'}
+            if opacity_sensitive_rgb(n):
+                row['opacity_or_lighting_rgb_sha256']=images[key]['all_channels_sha256']
         rows.append(row)
     links=sorted((l.from_node.name,l.from_socket.identifier,l.to_node.name,l.to_socket.identifier) for l in mat.node_tree.links)
     return {'nodes':sorted(rows,key=lambda r:r['name']),'links':links,'backface_culling':mat.use_backface_culling}
@@ -65,8 +71,8 @@ def export(out):
             if key not in materials:materials[key]=material_contract(mat,images)
             contracts.append(materials[key])
         opacity=hashlib.sha256(json.dumps(contracts,sort_keys=True).encode()).hexdigest()
-        rows.append({'id':ob.name,'species':ob.get('species'),'matrix_world':[x for row in ob.matrix_world for x in row],'geometry_sha256':geometry,'opacity_mapping_sha256':opacity,'pass_index':ob.pass_index,'seed':ob.get('seed')})
-    cameras={o.name:{'matrix_world':[x for row in o.matrix_world for x in row],'lens':o.data.lens,'sensor_width':o.data.sensor_width,'sensor_height':o.data.sensor_height,'shift':[o.data.shift_x,o.data.shift_y],'type':o.data.type,'ortho_scale':o.data.ortho_scale} for o in bpy.context.scene.objects if o.type=='CAMERA'}
+        rows.append({'id':ob.name,'species':ob.get('species'),'asset_id':ob.get('asset_id'),'matrix_world':[x for row in ob.matrix_world for x in row],'geometry_sha256':geometry,'opacity_mapping_sha256':opacity,'pass_index':ob.pass_index,'seed':ob.get('seed')})
+    cameras={o.name:camera_contract(o) for o in bpy.context.scene.objects if o.type=='CAMERA'}
     record={'exporter':'blender_instance_snapshot_v1','native_scene':{'path':str(path),'sha256':digest(path)},'instances':sorted(rows,key=lambda r:r['id']),'cameras':cameras}
     out.parent.mkdir(parents=True,exist_ok=True);out.write_text(json.dumps(record,indent=2));print('Native plant snapshot:',len(rows),flush=True)
 

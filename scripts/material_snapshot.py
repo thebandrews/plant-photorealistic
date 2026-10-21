@@ -32,6 +32,7 @@ def snapshot(out):
     objects=[];images={};mats={};geometries={}
     for ob in sorted(bpy.context.scene.objects,key=lambda o:o.name):
         row={"id":ob.name,"type":ob.type,"parent":ob.parent.name if ob.parent else None,"matrix_world":[x for r in ob.matrix_world for x in r],"hide_render":ob.hide_render,"visible":ob.visible_get(),"kind":ob.get("kind"),"species":ob.get("species"),"seed":ob.get("seed")}
+        row['ray_visibility']={k:getattr(ob,k) for k in ('visible_camera','visible_diffuse','visible_glossy','visible_transmission','visible_shadow','visible_volume_scatter','is_holdout') if hasattr(ob,k)}
         if ob.type=="MESH":
             evaluated=ob.evaluated_get(graph);me=evaluated.to_mesh()
             row["geometry_sha256"]=mesh_digest(me);evaluated.to_mesh_clear()
@@ -51,6 +52,8 @@ def snapshot(out):
         objects.append(row)
     sc=bpy.context.scene
     settings={"world":world_contract(sc.world),"engine":sc.render.engine,"frame":sc.frame_current,"resolution":[sc.render.resolution_x,sc.render.resolution_y,sc.render.resolution_percentage],"pixel_aspect":[sc.render.pixel_aspect_x,sc.render.pixel_aspect_y],"view_transform":sc.view_settings.view_transform,"look":sc.view_settings.look,"exposure":sc.view_settings.exposure,"gamma":sc.view_settings.gamma,"film_transparent":sc.render.film_transparent,"use_border":sc.render.use_border,"border":[sc.render.border_min_x,sc.render.border_min_y,sc.render.border_max_x,sc.render.border_max_y],"collections":{c.name:{"hide_render":c.hide_render,"hide_viewport":c.hide_viewport} for c in bpy.data.collections}}
+    if hasattr(sc,'cycles'):
+        settings['sampling']={k:getattr(sc.cycles,k) for k in ('seed','use_animated_seed','samples','use_adaptive_sampling','adaptive_threshold','use_denoising') if hasattr(sc.cycles,k)}
     result={"exporter":"material_invariants_v1","native_scene":plants["native_scene"],"invariants":{"plants":plants["instances"],"cameras":plants["cameras"],"objects":objects,"settings":settings}}
     out.write_text(json.dumps(result,indent=2),encoding="utf-8")
     print("Material invariants exported:",len(objects),flush=True)

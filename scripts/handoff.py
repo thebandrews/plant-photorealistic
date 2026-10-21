@@ -18,7 +18,8 @@ def checked(rec, base):
     require(path.is_file() and digest(path)==rec["sha256"],"Missing or changed evidence: "+str(path))
     return path
 def pixels(rec,base):
-    with Image.open(checked(rec,base)) as im: return np.array(im.convert("RGB"))
+    from raster import load
+    return load(checked(rec,base))[0]
 def check(data,base):
     require(data.get("schema_version")==1 and data.get("kind")=="validated_3d_render_handoff","Expected validated 3D render handoff, not an AI illustration")
     require(data.get("project") and data.get("revision"),"Project and revision required")
@@ -42,7 +43,8 @@ def check(data,base):
     require(validation.get("render_sha256_by_camera")=={v["camera_id"]:v["image"]["sha256"] for v in rows},"Validation is not bound to current camera images")
     for view in rows:
         require(view.get("provenance")=="renderer_output","Only native renderer output can be the baseline")
-        image=pixels(view["image"],base);h,w=image.shape[:2]
+        with Image.open(checked(view['image'],base)) as image:
+            w,h=image.size
         require(view.get("dimensions")==[w,h],"Actual image dimensions differ")
         for key in ("structural","object_ids","depth","projected_plants","editable_mask","protected_mask"):
             checked(view[key],base)
