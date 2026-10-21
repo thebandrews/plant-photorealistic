@@ -12,7 +12,14 @@ def distance(a,b):
     require(all(type(x) in (int,float) and math.isfinite(x) for x in a+b),"Finite image anchors required")
     return math.dist(a,b)
 def check(data,base):
-    require(data.get('schema_version') in (None, 1, 2, 3), 'Unknown appearance review version')
+    require(data.get('schema_version') in (None, 1, 2, 3, 4), 'Unknown appearance review version')
+    if data.get('schema_version') == 4:
+        if data.get('method') == 'native_botanical_refinement':
+            from botanical_refinement import check_review
+        else:
+            require(data.get('method') == 'photo_finish', 'Unknown finishing review method')
+            from photo_finish import check_review
+        return check_review(data, base)
     if data.get('schema_version') == 3:
         from photo_composite import check_review
         return check_review(data, base)

@@ -1,4 +1,4 @@
-"""Run in Blender against the unchanged validated scene to bind overlay objects."""
+"""Run in Blender against the saved baseline or checked candidate scene."""
 import json
 import hashlib
 import sys

@@ -1,6 +1,6 @@
 # Appearance evidence and release
 
-Use schema version 2 for the landscape appearance stage and schema version 3 for the required final original-photo composite; see [photo integration](photo-integration.md). A landscape-stage acceptance is not final completion. Legacy reviews retain their strict recognition contract for compatibility. The upstream schema version 1 handoff remains unchanged.
+Use schema 2 for material-only/image-interior landscape stages. Planned native botanical geometry refinement and new final photo finishing use schema 4; see [finishing](finishing.md). The geometry freezes and IoU measurements below apply to the stricter schema 2 routes, not authorized branch/leaf refinement. A landscape-stage acceptance is not final completion. Legacy schema 3 binary composites remain verifiable but do not satisfy the revised cleanup/edge/anatomy requirements. The upstream schema 1 handoff remains unchanged.
 
 ## Identity and visibility
 
