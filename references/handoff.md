@@ -23,3 +23,5 @@ Use scripts/make_edit_masks.py with actual renderer ID/depth arrays and explicit
 Do not accept an earlier AI illustration by relabeling its provenance or attaching native IDs. Return incomplete guides or illustrations to the render workflow.
 
 handoff.py verifies hashes, dimensions, coverage, species bindings, actual ID visibility, mask partition and validation bindings. It does not authenticate a dishonest exporter or independently interpret PDF geometry; inspect upstream evidence.
+
+After this check passes, downstream appearance work inherits native species/asset identity, placement and occlusion. Tiny or hidden visible fragments do not invalidate the handoff. Build a version 2 appearance plan before generation: preserve unreviewable image regions, or use unchanged native geometry/opacity/asset bindings for material-only refinement. No upstream schema change or independent recognition of every cultivar is required. Plans, generation logs and candidate/composite evidence belong in the client output folder, not this repository.
