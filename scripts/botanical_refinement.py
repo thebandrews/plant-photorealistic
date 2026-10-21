@@ -1,6 +1,5 @@
 """Planned native branch/leaf refinement with species and placement locked."""
 import argparse
-import copy
 import json
 from pathlib import Path
 
@@ -29,9 +28,10 @@ def mapping(rows):
 
 def compare(before, after, editable):
     """Only declared plant mesh geometry may differ. Return actual changed IDs."""
-    a, b = copy.deepcopy(before['invariants']), copy.deepcopy(after['invariants'])
-    original_a, original_b = mapping(before['invariants']['plants']), mapping(after['invariants']['plants'])
+    a, b = before['invariants'], after['invariants']
+    require(a.keys() == b.keys(), 'Native invariant fields changed')
     plants_a, plants_b = mapping(a['plants']), mapping(b['plants'])
+    require([p['id'] for p in a['plants']] == [p['id'] for p in b['plants']], 'Native plant ordering changed')
     require(plants_a.keys() == plants_b.keys() and set(editable) <= plants_a.keys(), 'Plant population or plan IDs changed')
     changed = []
     for name in plants_a:
@@ -41,24 +41,32 @@ def compare(before, after, editable):
         if pa.get('geometry_sha256') != pb.get('geometry_sha256'):
             require(name in editable, 'Undeclared plant geometry changed')
             changed.append(name)
-        if name in editable:
-            pa.pop('geometry_sha256', None); pb.pop('geometry_sha256', None)
+        ignored = {'geometry_sha256'} if name in editable else set()
+        require({k:v for k,v in pa.items() if k not in ignored} ==
+                {k:v for k,v in pb.items() if k not in ignored}, 'Protected plant invariant changed')
     oa, ob = mapping(a['objects']), mapping(b['objects'])
+    require([o['id'] for o in a['objects']] == [o['id'] for o in b['objects']], 'Native object ordering changed')
     require(oa.keys() == ob.keys(), 'Native object membership changed')
     for name in editable:
         require(name in oa and oa[name].get('kind') == ob[name].get('kind') == 'plant', 'Only plant geometry can be refined')
-        require(original_a[name]['geometry_sha256'] == oa[name].get('geometry_sha256') and
-                original_b[name]['geometry_sha256'] == ob[name].get('geometry_sha256'),
+        require(plants_a[name]['geometry_sha256'] == oa[name].get('geometry_sha256') and
+                plants_b[name]['geometry_sha256'] == ob[name].get('geometry_sha256'),
                 'Plant/object geometry exports differ')
-        oa[name].pop('geometry_sha256', None); ob[name].pop('geometry_sha256', None)
+    for name in oa:
+        ignored = {'geometry_sha256'} if name in editable else set()
+        require({k:v for k,v in oa[name].items() if k not in ignored} ==
+                {k:v for k,v in ob[name].items() if k not in ignored}, 'Protected object invariant changed')
     # Film transparency is a render presentation choice; cameras/lights stay fixed.
-    for value in (a, b):
-        value['settings'].pop('film_transparent', None)
-    require(a == b, 'Species, asset, root/collar, transform, camera, hardscape, opacity or lighting changed')
+    for key in a.keys() - {'plants', 'objects'}:
+        av, bv = a[key], b[key]
+        if key == 'settings':
+            av = {k:v for k,v in av.items() if k != 'film_transparent'}
+            bv = {k:v for k,v in bv.items() if k != 'film_transparent'}
+        require(av == bv, 'Camera, hardscape, opacity, lighting or protected state changed')
     return changed
 
 
-def prepare(handoff_path, before_path, ids, out):
+def prepare(handoff_path, before_path, ids, out, foliage_fill=False):
     hp = Path(handoff_path).resolve(); data = read(hp); check_handoff(data, hp.parent)
     bp = Path(before_path).resolve(); before = read(bp)
     require(before.get('exporter') == 'botanical_invariants_v1' and
@@ -69,6 +77,9 @@ def prepare(handoff_path, before_path, ids, out):
     plan = {'kind': 'botanical_refinement_plan', 'schema_version': 1, 'handoff': record(hp),
             'native_before': record(bp), 'editable_plant_ids': list(ids),
             'permission': 'Branch/leaf mesh and UV refinement only; preserve species, assets, roots, size class and design.'}
+    if foliage_fill:
+        plan['foliage_fill'] = {'plant_ids': list(ids), 'permission':
+            'Add attached branches/leaves within each existing presentation envelope; preserve species habit, roots, size class, bloom state and design.'}
     out = Path(out).resolve(); require(not out.exists(), 'Use a new refinement plan'); out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(plan, indent=2), encoding='utf-8')
     return plan
@@ -110,6 +121,11 @@ def check_review(data, base):
     from appearance_guard import GEOMETRY
     extra = ('species_habit', 'branch_taper_attachment', 'leaf_scale_distribution', 'presentation_size', 'root_positions')
     require(all(vision.get('geometry', {}).get(k) == 'pass' for k in GEOMETRY + extra), 'Botanical geometry/placement review failed')
+    if plan.get('foliage_fill'):
+        require(plan['foliage_fill'].get('plant_ids') == editable and
+                all(vision.get('geometry', {}).get(k) == 'pass' for k in
+                    ('foliage_fullness', 'natural_asymmetry', 'leaf_volume_detail')),
+                'Foliage fullness, asymmetry and volumetric leaf review required')
     rows = vision.get('plants', [])
     require(len(rows) == len(ledger) and {p['id'] for p in rows} == set(ledger), 'Account for every canonical plant')
     for row in rows:
@@ -127,5 +143,6 @@ def check_review(data, base):
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__); p.add_argument('handoff'); p.add_argument('--before', required=True)
-    p.add_argument('--plants', nargs='+', required=True); p.add_argument('--out', required=True); args = p.parse_args()
-    print(json.dumps(prepare(args.handoff, args.before, args.plants, args.out), indent=2))
+    p.add_argument('--plants', nargs='+', required=True); p.add_argument('--out', required=True)
+    p.add_argument('--foliage-fill', action='store_true'); args = p.parse_args()
+    print(json.dumps(prepare(args.handoff, args.before, args.plants, args.out, args.foliage_fill), indent=2))
