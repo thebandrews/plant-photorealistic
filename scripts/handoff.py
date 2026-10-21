@@ -59,9 +59,11 @@ def check(data,base):
         indices=[p.get("pass_index") for p in plants]
         require(all(type(i) is int and i>0 for i in indices) and len(indices)==len(set(indices)),"Unique positive plant render indices required")
         species={p["id"]:p["species"] for p in ledger}
+        values,counts=np.unique(ids,return_counts=True)
+        visibility=dict(zip(map(int,values),map(int,counts)))
         for p in plants:
             require(p.get("species")==species[p["id"]],"Projection/ledger species mismatch")
-            count=int(np.count_nonzero(ids==p["pass_index"]))
+            count=visibility.get(p["pass_index"],0)
             require(p.get("visible_pixels")==count,"Visibility does not match actual ID pixels")
             if count:
                 require(isinstance(p.get("root_pixel"),list) and len(p["root_pixel"])==2 and all(isinstance(x,(int,float)) and math.isfinite(x) for x in p["root_pixel"]),"Visible plant needs its native root projection")

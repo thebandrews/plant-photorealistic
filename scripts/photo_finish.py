@@ -16,8 +16,29 @@ from handoff import checked, read, record, require
 from photo_composite import PHOTO_CHECKS, LANDSCAPE_KINDS, context as photo_context, resolve_surface_overlap
 from raster import load, save, scaled_like
 
-FINISH_CHECKS = PHOTO_CHECKS + ('people_removed', 'construction_clutter_removed',
+LEGACY_FINISH_CHECKS = PHOTO_CHECKS + ('people_removed', 'construction_clutter_removed',
     'clean_background_repairs', 'natural_plant_anatomy', 'no_cutout_fringes', 'surface_transitions')
+SURFACE_CHECKS = ('hardscape_surface_realism', 'natural_leaf_litter')
+FINISH_CHECKS = LEGACY_FINISH_CHECKS + SURFACE_CHECKS
+
+
+def verify_renderer_rgba(matte, mp, stage, sp, catalog, alpha, straight):
+    """Bind filtered coverage to actual native output; IndexOB includes leaf holes."""
+    require(stage['method'] == 'native_botanical_refinement', 'Native botanical stage required for renderer RGBA')
+    path = checked(matte['renderer_rgba'], mp.parent)
+    require(path == checked(stage['candidate'], sp.parent), 'Renderer RGBA differs from checked native candidate')
+    rgb, native_alpha = load(path)
+    require(native_alpha is not None and np.array_equal(rgb, straight), 'Renderer straight RGB differs')
+    quantized = np.ceil(native_alpha.astype(np.float64) * 255 / np.iinfo(native_alpha.dtype).max).astype(np.uint8)
+    require(np.array_equal(alpha, quantized), 'Renderer alpha coverage was modified')
+    after = read(checked(stage['native_after'], sp.parent))
+    require(after['invariants']['settings']['film_transparent'] is True, 'Transparent native world required')
+    proof = read(checked(stage['render_proof'], sp.parent))
+    excluded = {o['name'] for o in catalog['objects'] if o['type'] == 'MESH' and o.get('kind') not in LANDSCAPE_KINDS}
+    overrides = proof.get('camera_only_export_overrides', [])
+    require(len(overrides) == len(excluded) and {o['name'] for o in overrides} == excluded and
+            all(o.get('visible_camera') is False or o.get('holdout') is True for o in overrides),
+            'Log every excluded context mesh camera override')
 
 
 def gray(ref, base, shape):
@@ -28,7 +49,7 @@ def gray(ref, base, shape):
     return result
 
 
-def blend(fg, bg, alpha):
+def _blend_block(fg, bg, alpha):
     """Straight (unassociated) sRGB, blended in linear light; exact endpoints."""
     def linear(rgb):
         c = rgb.astype(np.float64) / 65535
@@ -38,6 +59,14 @@ def blend(fg, bg, alpha):
     srgb = np.where(c <= .0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - .055)
     out = np.rint(np.clip(srgb, 0, 1) * 65535).astype(np.uint16)
     out[alpha == 0] = bg[alpha == 0]; out[alpha == 255] = fg[alpha == 255]
+    return out
+
+
+def blend(fg, bg, alpha):
+    # Identical per-sample arithmetic, bounded temporary memory at native size.
+    out = np.empty(fg.shape, dtype=np.uint16)
+    for y in range(0, len(fg), 128):
+        out[y:y+128] = _blend_block(fg[y:y+128], bg[y:y+128], alpha[y:y+128])
     return out
 
 
@@ -97,9 +126,12 @@ def context(plan, base):
     require(np.any(mask) and np.any(~mask), 'Real photographic background required')
     alpha = gray(matte['alpha'], mp.parent, mask.shape)
     core = ~expand(~mask, 2)
-    require(not np.any((alpha > 0) & ~expand(mask, 2)) and np.all(alpha[core] == 255), 'Matte exceeds native edge band or erodes opaque interiors')
-    require(np.all(alpha[plants] > 0), 'Matte erased visible plant fragments')
     straight, _ = load(checked(matte['straight_rgb'], mp.parent)); require(straight.shape == plate.shape, 'Straight RGB canvas differs')
+    if matte.get('renderer_rgba'):
+        verify_renderer_rgba(matte, mp, stage, sp, catalog, alpha, straight)
+    else:
+        require(not np.any((alpha > 0) & ~expand(mask, 2)) and np.all(alpha[core] == 255), 'Matte exceeds native edge band or erodes opaque interiors')
+        require(np.all(alpha[plants] > 0), 'Matte erased visible plant fragments')
     straight = scaled_like(straight, plate)
     # Checked appearance owns every opaque interior; renderer RGB removes old
     # background contamination only in the two-pixel antialiasing boundary band.
@@ -134,6 +166,7 @@ def prepare(photo_plan, stage, matte, cleanup_inventory, transition_alpha, out):
     plan = {'schema_version': 1, 'kind': 'photo_finish_plan', 'photo_plan': record(photo_plan),
             'landscape_review': record(stage), 'renderer_matte': record(matte),
             'cleanup_regions': regions, 'transition_alpha': record(transition_alpha),
+            'surface_realism_review': True,
             'operation': 'cleanup_then_straight_srgb_linear_overlay_then_bounded_ground_blend_v1'}
     context(plan, Path.cwd())
     out = Path(out).resolve(); require(not out.exists(), 'Use a new pre-generation finishing plan')
@@ -207,7 +240,8 @@ def check_review(data, base):
     vision = data.get('photo_review', {})
     require(vision.get('reviewer') == 'vision-capable-agent' and vision.get('source_and_final_loaded') is True and
             vision.get('native_pixel_edges_loaded') is True and vision.get('observations'), 'Actual source/final/native edge review required')
-    require(all(vision.get('checks', {}).get(k) == 'pass' for k in FINISH_CHECKS), 'Cleanup, anatomy or photo integration review failed')
+    checks = FINISH_CHECKS if plan.get('surface_realism_review') else LEGACY_FINISH_CHECKS
+    require(all(vision.get('checks', {}).get(k) == 'pass' for k in checks), 'Cleanup, anatomy or photo integration review failed')
     images(vision.get('paired_evidence'), base)
     rows = vision.get('cleanup', [])
     require(len(rows) == len(plan['cleanup_regions']) and {r['id'] for r in rows} == {r['id'] for r in plan['cleanup_regions']}, 'Review every cleanup target')
