@@ -1,6 +1,6 @@
 # Original-photo integration and final release
 
-The photograph supplies existing architecture, neighborhood, background trees and sky. The validated native scene supplies the proposed planting, beds and hardscape. Refined 3D beauty images are intermediate foreground sources. Preserve native species, roots, geometry, occlusion and camera; do not generate a replacement background.
+The photograph supplies existing architecture, neighborhood, background trees and sky. The validated native scene supplies proposed planting, beds and hardscape. Preserve native species, roots and camera; botanical geometry refinement follows its separate planned route. Do not generate a replacement background. This reference covers plate preparation, bounded surface recovery and legacy schema 3 binary composites. **New deliveries use the cleanup, genuine alpha and schema 4 review in [finishing](finishing.md).**
 
 ## Evidence and preparation
 
@@ -24,13 +24,13 @@ For a batch, Python callers may perform one full `handoff.check` before `prepare
 python scripts/photo_composite.py compose PHOTO_PLAN/plan.json --foreground CHECKED_LANDSCAPE.png --out FINAL_DIR
 ```
 
-The foreground must be the exact image referenced by the accepted schema 2 landscape review, with its original camera dimensions. All selected native landscape pixels are retained; all other samples come from the photographic plate. The helper uses a binary native-ID matte so it does not erode tiny plants or change their count. At native resolution inspect high-contrast foliage edges for fringes from the beauty render's former background. If fringes require a transparent renderer matte or bounded edge treatment, preserve those extra passes and implement a verifiable operation rather than claiming it used the unchanged binary recipe.
+This legacy/diagnostic composite uses the exact accepted schema 2 foreground at original dimensions. It uses a binary native-ID matte, retaining selected native samples and photographic samples elsewhere. It can reveal old-background fringes and abrupt joins; use `photo_finish.py` with actual renderer straight-alpha evidence for final delivery. Do not claim cleanup or alpha blending used this unchanged binary recipe.
 
 Coincident native ground surfaces can interleave foreground IDs with a context ground proxy and produce a stippled photo/render transition. Resolve that from actual geometry, not by including the entire context plane. Run Blender with `--python scripts/export_surface_projection.py -- --handoff HANDOFF --surfaces SURFACE_NAME --overlap-with CONTEXT_GROUND_NAME --out PROJECTION.json`, then add `--surface-projection PROJECTION.json` to photo planning. The exporter preserves actual triangles/camera, clips triangles crossing the near plane, and records camera-Z depth convention. Verify the convention against the actual baseline depth; a ray-distance dataset needs a corresponding actual exporter convention.
 
 The helper recovers only pixels inside those actual projected nonplant landscape triangles, currently labeled as the explicitly listed existing-ground context, whose baseline depth agrees within 0.01 native scene units. It cannot change plant selection or include buildings/sky. The guard recomputes that bounded recovery. Keep the projection and depth hashes, inspect the repaired native-size seam, and do not widen the tolerance or draw a replacement footprint if the recovery fails.
 
-Inspect source/native/final overviews, original-pixel cutout edges, foreground ground contact and the camera set together. Record remaining source construction activity outside the proposed footprint rather than confusing it with a compositing defect. Do not erase photographed objects or visible native plants merely to improve a composition. Serious mismatched alignment, geometry-like seams or lighting discontinuity must be corrected or marked incomplete; a mask reconstruction check alone cannot establish realism.
+Inspect source/native/final overviews, native-pixel edges, ground contact and the camera set together. Remove people and temporary construction clutter through the bounded cleanup stage, including outside the proposed footprint. Preserve permanent photographed features and all proposed plants. Mismatched alignment, geometry-like seams or lighting discontinuity require correction or an incomplete disposition; reconstruction alone cannot establish realism.
 
 ## Schema 3 final review
 
@@ -46,4 +46,4 @@ Top level: `schema_version: 3`, `method: photo_composite`, hashed `handoff`, `ca
 
 Paired evidence must be readable images of the actual source/native/final comparisons and native-pixel edge inspection. Hashing an unrelated text file is not photographic review evidence. Image validity and hashes do not substitute for the agent's actual inspection or independently establish the semantic content of a comparison.
 
-The final gallery must show the photo composites and source/native/final comparisons. Report photographic completion independently of material-stage improvement, with retained plant regions, photo dimensions/resampling, original-background preservation and inherited site-estimation warnings.
+Schema 3 remains verifiable for existing artifacts but cannot satisfy the new cleanup/anatomy/edge release criteria. The final gallery must show schema 4 finished photo composites and source/cleaned/native/final comparisons. Report photographic completion independently of material-stage improvement, with cleanup/refined plant regions, dimensions/resampling, background preservation outside declared edits and inherited warnings.
