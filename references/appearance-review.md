@@ -1,6 +1,6 @@
 # Appearance evidence and release
 
-Use review schema version 2 for new work. Legacy reviews without that version retain their original strict recognition contract for compatibility. The upstream schema version 1 handoff remains unchanged.
+Use schema version 2 for the landscape appearance stage and schema version 3 for the required final original-photo composite; see [photo integration](photo-integration.md). A landscape-stage acceptance is not final completion. Legacy reviews retain their strict recognition contract for compatibility. The upstream schema version 1 handoff remains unchanged.
 
 ## Identity and visibility
 

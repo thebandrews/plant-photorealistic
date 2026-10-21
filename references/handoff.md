@@ -16,7 +16,7 @@ Each view:
 - projected_plants JSON with camera_id, image_sha256, plants [{id,species,pass_index,root_pixel,visible_pixels,...}]. Include all canonical plants even when visible_pixels is zero. Counts are recomputed from the real ID pass.
 - editable_mask/protected_mask: grayscale PNGs partitioning the frame. Editable regions are permitted material interiors; protect crown silhouettes, root contacts, wall caps/toes/returns, borders, landing outlines, steps, paving joints and architecture/context. Derive masks from native IDs/depth/boundary evidence with a protected boundary band. Never use a full-frame edit mask.
 - mask_provenance {method:native_id_depth_boundaries,evidence:{path,sha256}}.
-- optional source_photo and exact-species appearance references.
+- `source_photo` is required for this skill's final photo composite; exact-species appearance references remain optional. Inherit a matching camera-fit record and upstream photo preparation provenance when available. A structurally valid handoff without a photograph can support a landscape appearance stage, but cannot complete the photo-integration task.
 
 Use scripts/make_edit_masks.py with actual renderer ID/depth arrays and explicitly selected material-interior object indices. Its default boundary margin is three pixels. Keep paving/landing, borders and roots protected; expanding material-interior permissions requires actual geometry review. The helper cannot infer semantic surface permissions from an integer ID alone.
 
