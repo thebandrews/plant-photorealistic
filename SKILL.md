@@ -41,6 +41,12 @@ Match edge color, exposure, light direction and contact shadows. Repair ground t
 
 Finish permitted hardscape surfaces as real photographed materials: concrete aggregate and subtle wear at the correct scale, coherent light/grain and a restrained natural scatter of fallen leaves with contact shadows. Keep slab outlines, joints, wall/step edges and every structure fixed. Retain useful real photographed texture where it matches the design. Thin natural leaf litter belongs in the finished scene; remove tools, bags and construction debris. Do not invent paving joints, cracks that imply new boundaries, rubble, props or vegetation. Use [surface prompts](references/prompt.md) and native-region edits when a full canvas cannot be generated at its exact dimensions.
 
+## Render backend and shared plant library
+
+Candidate re-renders (beauty, object IDs, depth, transparent landscape layer) run locally by default. When the request or environment selects GPU rendering ("Render backend: runpod" or `PLANT_RENDER_BACKEND=runpod`), run them through `python scripts/blender_run.py --output FRESH_DIR -- -b SCENE.blend --python RENDER.py -- ...`; up to three camera renders may run concurrently. Snapshot and export scripts stay local. Remote renders mirror byte-identical inputs from `C:\Workstation` and the skills folder, so keep scenes, records and dependencies there: save candidate scenes with relative dependency paths, write records with paths relative to their own folder, and use fresh output paths. A portability error (exit 4) lists what to fix before anything is uploaded; never fall back to local silently, and report GPU seconds with the delivery. The backend changes where Cycles runs, never a check or review requirement.
+
+When `PACIFICA_ASSETS_DIR` names the shared plant library, save each accepted native botanical refinement of a shared specimen as a **new version** with `python scripts/library_writeback.py PACKAGE_SPEC.json` (the plant-render package format; keep `quality_status: draft` unless that skill's approval criteria are met). Never overwrite or edit an existing library version.
+
 ## Review and release
 
 Load actual comparisons and native-size crops; record observations. Every canonical plant remains accounted for. Species identity comes from the validated native binding; appearance review tests consistency with it. Do not manufacture confidence, segmentation, measurements or findings. The helpers verify operations and evidence, not botanical truth or photographic coherence.
