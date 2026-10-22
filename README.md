@@ -8,6 +8,8 @@ Sparse foliage can be filled within the existing presentation envelope using a n
 
 Install this repository root as `plant-photorealistic` under the Codex skills directory. Python helpers use `requirements.txt`; native snapshots/mattes require Blender. Built-in image generation needs no separate API key. Invoke: `Use $plant-photorealistic on this render-handoff.json.`
 
+Candidate re-renders run on the local Blender by default. On a workstation with the `render-remote` GPU client, `scripts/blender_run.py --render-backend runpod` (or `PLANT_RENDER_BACKEND=runpod`) runs them on remote GPUs with byte-identical inputs and outputs. `scripts/blender_backend.py` is shared unchanged with the plant-render skill. When `PACIFICA_ASSETS_DIR` points at the shared plant library, `scripts/library_writeback.py` saves accepted refined specimens there as new versions.
+
 Read [SKILL.md](SKILL.md) and [the finishing workflow](references/finishing.md) for the three appearance routes, cleanup inventory, genuine renderer alpha, local transition editing and schema 4 release evidence. Material/image-interior routes retain schema 2 checks. Legacy schema 3 binary composites remain verifiable; new deliveries require the cleanup/anatomy/edge checks in schema 4 `photo_finish`. Scripts verify evidence and reproducible operations; actual visual review establishes photographic coherence.
 
 ```text
