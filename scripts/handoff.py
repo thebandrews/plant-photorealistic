@@ -21,7 +21,7 @@ def pixels(rec,base):
     from raster import load
     return load(checked(rec,base))[0]
 def check(data,base):
-    require(data.get("schema_version")==1 and data.get("kind")=="validated_3d_render_handoff","Expected validated 3D render handoff, not an AI illustration")
+    require(data.get("schema_version")==1 and data.get("kind") in ("validated_3d_render_handoff", "native_3d_completion_handoff"),"Expected validated 3D render handoff, not an AI illustration")
     require(data.get("project") and data.get("revision"),"Project and revision required")
     scene=checked(data["native_scene"],base)
     ledger=read(checked(data["plant_ledger"],base))
@@ -32,12 +32,17 @@ def check(data,base):
     notes=read(checked(data["planting_notes"],base))
     require(isinstance(notes,dict) and all(k in notes for k in ("design_intent","species_cautions","hardscape_constraints","warnings")),"Planting/geometry notes and warnings required, even when lists are empty")
     vp=checked(data["native_validation"],base);validation=read(vp)
-    require(validation.get("kind")=="native_3d_validation" and validation.get("status") in ("pass","completed_with_issues"),"Upstream native validation has not passed")
-    require(validation.get("placement_passed") is True and validation.get("geometry_passed") is True and validation.get("coverage_passed") is True,"Upstream placement/geometry/coverage must pass")
+    completion = data['kind'] == 'native_3d_completion_handoff'
+    if completion:
+        from completion_intake import verify
+        wanted = verify(data, base, validation, ledger)
+    else:
+        require(validation.get("kind")=="native_3d_validation" and validation.get("status") in ("pass","completed_with_issues"),"Upstream native validation has not passed")
+        require(validation.get("placement_passed") is True and validation.get("geometry_passed") is True and validation.get("coverage_passed") is True,"Upstream placement/geometry/coverage must pass")
+        require(validation.get("evidence"),"Native validation evidence is missing")
+        for rec in validation["evidence"]:checked(rec,vp.parent)
+        wanted=data.get("requested_cameras",[])
     require(validation.get("native_scene_sha256")==digest(scene) and validation.get("plant_ledger_sha256")==data["plant_ledger"]["sha256"],"Validation scene or ledger binding differs")
-    require(validation.get("evidence"),"Native validation evidence is missing")
-    for rec in validation["evidence"]:checked(rec,vp.parent)
-    wanted=data.get("requested_cameras",[])
     rows=data.get("views",[]);cids=[v.get("camera_id") for v in rows]
     require(wanted and len(wanted)==len(set(wanted)) and len(cids)==len(set(cids)) and set(cids)==set(wanted),"All requested cameras must appear exactly once")
     require(validation.get("render_sha256_by_camera")=={v["camera_id"]:v["image"]["sha256"] for v in rows},"Validation is not bound to current camera images")
@@ -81,7 +86,7 @@ def check(data,base):
         expected_edit,expected_protect=make(ids,depth,proof["allowed_material_indices"],proof.get("boundary_margin_px",3),proof.get("protected_indices",[]),[p.get("root_pixel") for p in plants])
         require(np.array_equal(editable,expected_edit) and np.array_equal(protected,expected_protect),"Masks differ from recorded native boundary derivation")
         if view.get("source_photo"):checked(view["source_photo"],base)
-    return {"status":"pass","project":data["project"],"views":cids,"plants":len(ledger),"scope":"Hashed upstream native-render handoff; not independent semantic verification"}
+    return {"status":"pass","project":data["project"],"views":cids,"plants":len(ledger),"handoff_kind":data["kind"], "certification":data.get("certification", "inherited_strict_validation"), "production_status":data.get("production_status", validation["status"]), "assumptions":data.get("assumptions", []), "scope":"Hashed upstream native-render handoff; not independent semantic verification"}
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument("command",choices=["check"]);parser.add_argument("handoff")
     args=parser.parse_args();p=Path(args.handoff).resolve()

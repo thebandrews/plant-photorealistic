@@ -18,6 +18,23 @@ PHOTO_CHECKS = ('source_photo_background', 'camera_alignment', 'landscape_placem
                 'lighting_shadows', 'construction_transitions', 'cross_view_consistency')
 
 
+def landscape_kind(obj):
+    return obj.get('photo_kind', obj.get('kind'))
+
+
+def verify_roles(catalog, base):
+    roles = [o for o in catalog['objects'] if 'photo_kind' in o]
+    if not roles: return
+    rp = checked(catalog['photo_role_map'], base); rolemap = read(rp)
+    require(rolemap.get('native_scene') == catalog['native_scene'] and rolemap.get('observations') and rolemap.get('evidence'), 'Reviewed scene-bound photo role map required')
+    for ref in rolemap['evidence']: checked(ref, rp.parent)
+    expected = {o['name']: o for o in rolemap['objects']}
+    require(len(expected) == len(roles) and set(expected) == {o['name'] for o in roles}, 'Role map/catalog membership differs')
+    for obj in roles:
+        row = expected[obj['name']]
+        require(obj['type'] == 'MESH' and row['native_kind'] == obj['kind'] and row['photo_kind'] == obj['photo_kind'] and obj['photo_kind'] in LANDSCAPE_KINDS, 'Invalid proposed landscape role')
+
+
 def resolve_surface_overlap(ids, depth, projection, allowed, catalog, tolerance=.01):
     """Only recover actual projected landscape within 0.01 native units of context."""
     require(tolerance == .01, 'Surface overlap tolerance cannot be widened')
@@ -93,6 +110,7 @@ def context(plan, base):
             'Camera fit is not bound to this camera and photograph')
     cat_path = checked(plan['object_catalog'], base)
     catalog = read(cat_path)
+    verify_roles(catalog, cat_path.parent)
     require(catalog.get('provenance') == 'renderer_object_catalog' and
             catalog.get('native_scene', {}).get('sha256') == handoff['native_scene']['sha256'],
             'Actual catalog from the validated native scene required')
@@ -101,7 +119,7 @@ def context(plan, base):
     indices = [o['pass_index'] for o in objects]
     require(len(indices) == len(set(indices)) and all(type(i) is int and i > 0 for i in indices),
             'Unique native mesh indices required')
-    allowed = sorted(o['pass_index'] for o in objects if o.get('kind') in LANDSCAPE_KINDS)
+    allowed = sorted(o['pass_index'] for o in objects if landscape_kind(o) in LANDSCAPE_KINDS)
     require(plan['selected_object_indices'] == allowed, 'Foreground selection includes context or omits native landscape')
     ids = np.load(checked(view['object_ids'], hp.parent), allow_pickle=False)
     projection = read(checked(view['projected_plants'], hp.parent))
@@ -135,7 +153,7 @@ def prepare(handoff_path, cid, catalog_path, fit_path, out, original_provenance=
     require(view.get('source_photo'), 'Photo compositing requires the matching source photograph')
     out = Path(out).resolve(); require(not out.exists(), 'Use a new photo plan directory'); out.mkdir(parents=True)
     catalog_path = Path(catalog_path).resolve(); catalog = read(catalog_path)
-    allowed = sorted(o['pass_index'] for o in catalog['objects'] if o['type'] == 'MESH' and o.get('kind') in LANDSCAPE_KINDS)
+    allowed = sorted(o['pass_index'] for o in catalog['objects'] if o['type'] == 'MESH' and landscape_kind(o) in LANDSCAPE_KINDS)
     ids = np.load(checked(view['object_ids'], hp.parent), allow_pickle=False)
     source = view['source_photo']; crop = None
     if original_provenance:
