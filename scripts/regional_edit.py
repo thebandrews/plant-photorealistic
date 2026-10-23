@@ -84,6 +84,32 @@ def verify(proof, base):
     return {'status':'verified', 'regions':len(proof['regions'])}
 
 
+def cleanup_edges(stitch_proof, inventory, out, feather=32):
+    """Narrow cleanup changes inward to reconcile a hard photographic patch edge."""
+    from appearance_plan import expand
+    sp=Path(stitch_proof).resolve(); proof=read(sp); verify(proof,sp.parent)
+    first=checked(proof['regions'][0]['plan'],sp.parent); source=read(first)['source']
+    original,aa=load(checked(source,first.parent)); raw,ra=load(checked(proof['candidate'],sp.parent))
+    require(aa is None and ra is None and original.shape==raw.shape,'Matching opaque cleanup source required')
+    ip=Path(inventory).resolve(); inv=read(ip); mask=np.zeros(original.shape[:2],bool)
+    for region in inv['regions']: mask |= permission(region['mask'],ip.parent,mask.shape)>0
+    require(type(feather) is int and 0<feather<=64 and np.any(mask) and np.any(~mask),'Bounded inward cleanup feather required')
+    alpha=np.zeros(mask.shape,np.uint8);interior=mask.copy()
+    for distance in range(1,feather+1):
+        alpha[interior]=round(255*distance/feather)
+        interior=~expand(~interior,1)
+    final=blend(scaled_like(raw,np.empty(0,np.uint16)),scaled_like(original,np.empty(0,np.uint16)),alpha)
+    out=Path(out).resolve();require(not out.exists(),'Use a fresh cleanup edge result');out.mkdir(parents=True)
+    save(out/'raw.png',final);Image.fromarray(alpha).save(out/'inward-alpha.png')
+    result={'kind':'cleanup_inward_edge_reconciliation','source':source,'stitch_proof':record(sp),
+            'inventory':record(ip),'feather_px':feather,'alpha':record(out/'inward-alpha.png'),
+            'candidate':record(out/'raw.png'),'operation':'linear_srgb_inward_only_v1',
+            'outside_cleanup_pixels_preserved':int((~mask).sum())}
+    (out/'edge-proof.json').write_text(json.dumps(result,indent=2),encoding='utf-8')
+    require(np.array_equal(final[~mask],scaled_like(original,final)[~mask]),'Cleanup edge operation changed protected photo samples')
+    return result
+
+
 if __name__ == '__main__':
     p=argparse.ArgumentParser(description=__doc__); sub=p.add_subparsers(dest='command',required=True)
     a=sub.add_parser('plan'); a.add_argument('--source',required=True); a.add_argument('--permission',required=True)

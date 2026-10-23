@@ -13,7 +13,7 @@ from PIL import Image
 from appearance_plan import expand
 from botanical_refinement import images
 from handoff import checked, read, record, require
-from photo_composite import PHOTO_CHECKS, LANDSCAPE_KINDS, context as photo_context, resolve_surface_overlap
+from photo_composite import PHOTO_CHECKS, LANDSCAPE_KINDS, context as photo_context, resolve_surface_overlap, landscape_kind, verify_roles
 from raster import load, save, scaled_like
 
 LEGACY_FINISH_CHECKS = PHOTO_CHECKS + ('people_removed', 'construction_clutter_removed',
@@ -22,7 +22,32 @@ SURFACE_CHECKS = ('hardscape_surface_realism', 'natural_leaf_litter')
 FINISH_CHECKS = LEGACY_FINISH_CHECKS + SURFACE_CHECKS
 
 
-def verify_renderer_rgba(matte, mp, stage, sp, catalog, alpha, straight):
+def context_ground_occlusion(matte, mp, stage, sp, catalog, ids, depth):
+    """Depth-order buried nonplant faces against the unchanged actual context ground."""
+    result = np.zeros(ids.shape, bool)
+    op = matte.get('context_ground_occlusion')
+    if not op: return result
+    require(op.get('operation') == 'native_context_ground_depth_v1' and
+            op.get('depth_tolerance') == .01 and op.get('depth_convention') == 'ray_distance', 'Bounded native context-depth operation required')
+    hp = checked(stage['handoff'], sp.parent); handoff = read(hp)
+    view = next(v for v in handoff['views'] if v['camera_id'] == stage['camera_id'])
+    require(op.get('baseline_object_ids') == view['object_ids'] and op.get('baseline_depth') == view['depth'],
+            'Context depth must use the immutable handoff passes')
+    baseline_ids = np.load(checked(op['baseline_object_ids'], hp.parent), allow_pickle=False)
+    baseline_depth = np.load(checked(op['baseline_depth'], hp.parent), allow_pickle=False)
+    require(baseline_ids.shape == baseline_depth.shape == ids.shape, 'Context depth canvas differs')
+    ground = sorted(o['pass_index'] for o in catalog['objects'] if o['type'] == 'MESH' and
+                    o.get('kind') in ('existing_ground_context', 'terrain', 'driveway', 'walkway') and
+                    landscape_kind(o) not in LANDSCAPE_KINDS)
+    require(op.get('occluding_indices') == ground, 'Only actual unselected context ground may occlude buried faces')
+    candidates = [o['pass_index'] for o in catalog['objects'] if o['type'] == 'MESH' and
+                  landscape_kind(o) in LANDSCAPE_KINDS and o.get('kind') != 'plant']
+    result = np.isin(baseline_ids, ground) & np.isin(ids, candidates) & np.isfinite(depth) & np.isfinite(baseline_depth) & (depth > baseline_depth + .01)
+    require(op.get('occluded_samples') == int(result.sum()), 'Recompute actual context occlusion count')
+    return result
+
+
+def verify_renderer_rgba(matte, mp, stage, sp, catalog, alpha, straight, ids=None, depth=None):
     """Bind filtered coverage to actual native output; IndexOB includes leaf holes."""
     require(stage['method'] == 'native_botanical_refinement', 'Native botanical stage required for renderer RGBA')
     path = checked(matte['renderer_rgba'], mp.parent)
@@ -30,15 +55,22 @@ def verify_renderer_rgba(matte, mp, stage, sp, catalog, alpha, straight):
     rgb, native_alpha = load(path)
     require(native_alpha is not None and np.array_equal(rgb, straight), 'Renderer straight RGB differs')
     quantized = np.ceil(native_alpha.astype(np.float64) * 255 / np.iinfo(native_alpha.dtype).max).astype(np.uint8)
+    if matte.get('context_ground_occlusion'):
+        require(ids is not None and depth is not None, 'Actual candidate passes required for context occlusion')
+        occluded = context_ground_occlusion(matte, mp, stage, sp, catalog, ids, depth)
+    else:
+        occluded = np.zeros(alpha.shape, bool)
+    quantized[occluded] = 0
     require(np.array_equal(alpha, quantized), 'Renderer alpha coverage was modified')
     after = read(checked(stage['native_after'], sp.parent))
     require(after['invariants']['settings']['film_transparent'] is True, 'Transparent native world required')
     proof = read(checked(stage['render_proof'], sp.parent))
-    excluded = {o['name'] for o in catalog['objects'] if o['type'] == 'MESH' and o.get('kind') not in LANDSCAPE_KINDS}
+    excluded = {o['name'] for o in catalog['objects'] if o['type'] == 'MESH' and landscape_kind(o) not in LANDSCAPE_KINDS}
     overrides = proof.get('camera_only_export_overrides', [])
     require(len(overrides) == len(excluded) and {o['name'] for o in overrides} == excluded and
             all(o.get('visible_camera') is False or o.get('holdout') is True for o in overrides),
             'Log every excluded context mesh camera override')
+    return occluded
 
 
 def gray(ref, base, shape):
@@ -93,6 +125,7 @@ def context(plan, base):
             matte.get('appearance_image_sha256') == stage['candidate']['sha256'], 'Actual matching straight-alpha renderer matte required')
     checked(scene, ap.parent if stage['method'] != 'image_edit' else hp.parent)
     cp = checked(matte['object_catalog'], mp.parent); catalog = read(cp)
+    verify_roles(catalog, cp.parent)
     require(catalog.get('provenance') == 'renderer_object_catalog' and catalog.get('native_scene', {}).get('sha256') == scene['sha256'],
             'Matte catalog belongs to another native scene')
     checked(catalog['native_scene'], cp.parent)
@@ -113,7 +146,7 @@ def context(plan, base):
         require(matte['depth']['sha256'] == read(rp)['depth']['sha256'], 'Matte depth differs from candidate render')
     else:
         require(matte['depth']['sha256'] == view['depth']['sha256'], 'Unchanged geometry matte depth differs')
-    selected = [o['pass_index'] for o in objects if o.get('kind') in LANDSCAPE_KINDS]
+    selected = [o['pass_index'] for o in objects if landscape_kind(o) in LANDSCAPE_KINDS]
     plant_indices = [o['pass_index'] for o in objects if o.get('kind') == 'plant']
     mask = np.isin(ids, selected); plants = np.isin(ids, plant_indices)
     if matte.get('surface_projection'):
@@ -128,8 +161,9 @@ def context(plan, base):
     core = ~expand(~mask, 2)
     straight, _ = load(checked(matte['straight_rgb'], mp.parent)); require(straight.shape == plate.shape, 'Straight RGB canvas differs')
     if matte.get('renderer_rgba'):
-        verify_renderer_rgba(matte, mp, stage, sp, catalog, alpha, straight)
+        occluded = verify_renderer_rgba(matte, mp, stage, sp, catalog, alpha, straight, ids, depth)
     else:
+        occluded = np.zeros(mask.shape, bool)
         require(not np.any((alpha > 0) & ~expand(mask, 2)) and np.all(alpha[core] == 255), 'Matte exceeds native edge band or erodes opaque interiors')
         require(np.all(alpha[plants] > 0), 'Matte erased visible plant fragments')
     straight = scaled_like(straight, plate)
@@ -138,6 +172,11 @@ def context(plan, base):
     foreground[~core] = straight[~core]
     cleanup = np.zeros(mask.shape, bool)
     regions = plan.get('cleanup_regions', [])
+    if plan.get('cleanup_inventory'):
+        ip = checked(plan['cleanup_inventory'], base); inventory = read(ip)
+        expected = inventory['regions']
+        for region in expected: region['mask'] = record(checked(region['mask'], ip.parent))
+        require(expected == regions, 'Cleanup inventory permissions changed')
     require(len({r['id'] for r in regions}) == len(regions), 'Duplicate cleanup region')
     for region in regions:
         require(region.get('kind') in ('person', 'tool', 'debris', 'equipment', 'temporary_staging') and region.get('description'), 'Describe temporary cleanup target')
@@ -150,10 +189,10 @@ def context(plan, base):
     # their three-pixel margin are never painted over by the ground repair pass.
     ground_kinds = {'bed', 'walk_slab', 'porch_slab', 'joint_substrate', 'sidewalk',
                     'stepping_stone', 'step', 'paver_crossing', 'paver_band', 'nonliving_surface_detail'}
-    ground = np.isin(ids, [o['pass_index'] for o in objects if o.get('kind') in ground_kinds])
+    ground = np.isin(ids, [o['pass_index'] for o in objects if landscape_kind(o) in ground_kinds])
     ground |= mask & ~np.isin(ids, selected)  # Bounded coincident-ground recovery.
     nonplants = mask & ~plants
-    eligible = (ground | (expand(nonplants, 12) & ~mask)) & ~expand(plants, 3)
+    eligible = (ground | (expand(nonplants, 12) & ~mask)) & ~expand(plants, 3) & ~occluded
     require(not np.any((transition > 0) & ~eligible), 'Transition edit reaches protected plant/background regions')
     return hp, view, plate, foreground, alpha, cleanup, transition, result
 
@@ -165,7 +204,7 @@ def prepare(photo_plan, stage, matte, cleanup_inventory, transition_alpha, out):
         region['mask'] = record(checked(region['mask'], inventory_path.parent))
     plan = {'schema_version': 1, 'kind': 'photo_finish_plan', 'photo_plan': record(photo_plan),
             'landscape_review': record(stage), 'renderer_matte': record(matte),
-            'cleanup_regions': regions, 'transition_alpha': record(transition_alpha),
+            'cleanup_regions': regions, 'cleanup_inventory': record(inventory_path), 'transition_alpha': record(transition_alpha),
             'surface_realism_review': True,
             'operation': 'cleanup_then_straight_srgb_linear_overlay_then_bounded_ground_blend_v1'}
     context(plan, Path.cwd())
@@ -241,18 +280,33 @@ def check_review(data, base):
     require(vision.get('reviewer') == 'vision-capable-agent' and vision.get('source_and_final_loaded') is True and
             vision.get('native_pixel_edges_loaded') is True and vision.get('observations'), 'Actual source/final/native edge review required')
     checks = FINISH_CHECKS if plan.get('surface_realism_review') else LEGACY_FINISH_CHECKS
-    require(all(vision.get('checks', {}).get(k) == 'pass' for k in checks), 'Cleanup, anatomy or photo integration review failed')
+    outcomes = vision.get('checks', {})
+    nonpassing = [k for k in checks if outcomes.get(k) != 'pass']
+    if data.get('release_policy') == 'complete_with_limitations':
+        require(all(outcomes.get(k) in ('pass', 'fail', 'estimated') for k in checks), 'Every finishing check needs an actual disposition')
+        limitations = data.get('limitations', [])
+        require({r.get('check') for r in limitations} == set(nonpassing) and
+                len(limitations) == len(nonpassing) and all(r.get('observations') for r in limitations),
+                'Describe each nonpassing finishing check without relabeling it passed')
+    else:
+        require(not nonpassing, 'Cleanup, anatomy or photo integration review failed')
     images(vision.get('paired_evidence'), base)
     rows = vision.get('cleanup', [])
     require(len(rows) == len(plan['cleanup_regions']) and {r['id'] for r in rows} == {r['id'] for r in plan['cleanup_regions']}, 'Review every cleanup target')
     for row in rows:
-        require(row.get('status') == 'removed' and row.get('observations'), 'Unresolved cleanup target')
+        require(row.get('observations'), 'Cleanup target needs actual observations')
+        if row.get('status') != 'removed':
+            target = next(t for t in plan['cleanup_regions'] if t['id'] == row['id'])
+            relevant = 'people_removed' if target['kind'] == 'person' else 'construction_clutter_removed'
+            require(data.get('release_policy') == 'complete_with_limitations' and row.get('status') in ('retained', 'partial') and relevant in nonpassing,
+                    'Unresolved cleanup target must be disclosed under the matching nonpassing check')
         images([row['paired_evidence']], base)
-    return {'status': 'accepted', 'camera_id': view['camera_id'], 'method': 'photo_finish', 'photo_background_composited': True,
-            'cleanup_regions': len(rows), 'cleanup_pixels': int(cleanup.sum()), 'transition_pixels': int((transition > 0).sum()),
+    return {'status': 'completed_with_limitations' if nonpassing else 'accepted', 'nonpassing_checks': nonpassing, 'limitations': data.get('limitations', []), 'camera_id': view['camera_id'], 'method': 'photo_finish', 'photo_background_composited': True,
+            'cleanup_regions': len(rows), 'unresolved_cleanup_targets': [r['id'] for r in rows if r.get('status') != 'removed'], 'cleanup_pixels': int(cleanup.sum()), 'transition_pixels': int((transition > 0).sum()),
             'photo_background_pixels_preserved': int(((alpha == 0) & ~cleanup & (transition == 0)).sum()),
             'landscape_evidence_counts': stage['evidence_counts'], 'scope': 'Cleaned original photo with checked landscape and reviewed integration',
-            'limitation': 'Native evidence and reproducible operations do not independently establish semantic realism'}
+            'upstream_handoff_kind': read(hp)['kind'], 'upstream_certification': read(hp).get('certification', 'inherited_strict_validation'), 'upstream_production_status': read(hp).get('production_status'), 'inherited_assumptions': read(hp).get('assumptions', []),
+            'limitation': 'Native evidence and reproducible operations do not independently establish semantic realism; finishing never upgrades upstream source/camera certification'}
 
 
 if __name__ == '__main__':
