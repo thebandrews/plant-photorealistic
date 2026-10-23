@@ -207,5 +207,6 @@ def check_v2(data, base):
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument("review");a=p.parse_args();path=Path(a.review).resolve()
     try:print(json.dumps(check(read(path),path.parent),indent=2))
-    except (ValueError,KeyError,OSError,TypeError) as e:p.exit(1,"FAIL: "+str(e)+"\n")
+    except KeyError as e:p.exit(1,f"FAIL: review or one of its records is missing the required field {e}\n")
+    except (ValueError,OSError,TypeError) as e:p.exit(1,"FAIL: "+str(e)+"\n")
 if __name__=="__main__":main()
