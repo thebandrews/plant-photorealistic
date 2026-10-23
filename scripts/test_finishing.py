@@ -60,6 +60,39 @@ class PhotoFinishing(unittest.TestCase):
                             'cleanup': [{'id': 'worker', 'status': 'removed', 'observations': 'Synthetic cleanup region replaced.',
                                          'paired_evidence': self.proof['candidate']}]}}
 
+    def test_completion_discloses_semantic_limits_without_upgrading_acceptance(self):
+        self.review['release_policy'] = 'complete_with_limitations'
+        self.review['photo_review']['checks']['camera_alignment'] = 'estimated'
+        self.review['limitations'] = [{'check':'camera_alignment', 'observations':'Synthetic source pose estimate remains unverified.'}]
+        result = check(self.review, self.p)
+        self.assertEqual(result['status'], 'completed_with_limitations')
+        self.assertEqual(result['nonpassing_checks'], ['camera_alignment'])
+        self.assertTrue(result['photo_background_composited'])
+
+    def test_completion_never_bypasses_native_or_pixel_integrity(self):
+        self.review['release_policy'] = 'complete_with_limitations'; self.review['limitations'] = []
+        rgb, aa = load(self.p/'final/candidate.png'); rgb[0,10] = 0
+        save_png(self.p/'final/candidate.png', rgb)
+        self.proof['candidate'] = record(self.p/'final/candidate.png'); save(self.p/'final/finish-proof.json', self.proof)
+        self.review['candidate'] = self.proof['candidate']; self.review['finish_proof'] = record(self.p/'final/finish-proof.json')
+        with self.assertRaisesRegex(ValueError, 'reconstruction differs'): check(self.review, self.p)
+
+    def test_completion_can_truthfully_retain_an_unresolved_cleanup_target(self):
+        self.review['release_policy'] = 'complete_with_limitations'
+        self.review['photo_review']['checks']['people_removed'] = 'fail'
+        self.review['limitations'] = [{'check':'people_removed', 'observations':'Synthetic target remains visible after targeted recovery.'}]
+        self.review['photo_review']['cleanup'][0]['status'] = 'partial'
+        result = check(self.review, self.p)
+        self.assertEqual(result['status'], 'completed_with_limitations')
+        self.assertEqual(result['unresolved_cleanup_targets'], ['worker'])
+        self.review['photo_review']['checks']['people_removed'] = 'pass'; self.review['limitations'] = []
+        with self.assertRaisesRegex(ValueError, 'Unresolved cleanup target'): check(self.review, self.p)
+
+    def test_completion_requires_each_nonpass_finding(self):
+        self.review['release_policy'] = 'complete_with_limitations'
+        self.review['photo_review']['checks']['camera_alignment'] = 'estimated'; self.review['limitations'] = []
+        with self.assertRaisesRegex(ValueError, 'Describe each'): check(self.review, self.p)
+
     def test_cleanup_alpha_blend_transition_and_exact_protection(self):
         result = check(self.review, self.p)
         self.assertTrue(result['photo_background_composited']); self.assertEqual(result['cleanup_regions'], 1)
@@ -79,7 +112,7 @@ class PhotoFinishing(unittest.TestCase):
         self.assertFalse(np.array_equal(load(result['image']['path'])[0][27, 4], load(self.proof['candidate']['path'])[0][27, 4]))
 
     def test_no_cleanup_targets_supported_after_inspection(self):
-        self.plan['cleanup_regions'] = []; save(self.p / 'empty-plan.json', self.plan)
+        self.plan['cleanup_regions'] = []; self.plan.pop('cleanup_inventory', None); save(self.p / 'empty-plan.json', self.plan)
         proof = compose(self.p / 'empty-plan.json', self.p / 'empty-final', transition_raw=self.p / 'transition-raw.png')
         verify(proof, self.p)
 
@@ -126,7 +159,7 @@ class PhotoFinishing(unittest.TestCase):
     def test_full_frame_cleanup_mask_rejected(self):
         Image.fromarray(np.full((32, 32), 255, np.uint8)).save(self.p / 'full.png')
         plan = copy.deepcopy(self.plan); plan['cleanup_regions'][0]['mask'] = record(self.p / 'full.png')
-        with self.assertRaisesRegex(ValueError, 'Localized binary'): context(plan, self.p)
+        with self.assertRaisesRegex(ValueError, 'Localized binary|Cleanup inventory permissions changed'): context(plan, self.p)
 
 
 class BotanicalRefinement(unittest.TestCase):

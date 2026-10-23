@@ -1,6 +1,6 @@
 # Input from the 3D render skill
 
-Run the render skill first. Its final delivery is high-fidelity 3D, not an AI-finished photograph. This skill accepts render-handoff.json using schema version 1, kind validated_3d_render_handoff.
+Run the render skill first. Its final delivery is high-fidelity 3D, not an AI-finished photograph. This skill accepts render-handoff.json using schema version 1, kind validated_3d_render_handoff or native_3d_completion_handoff.
 
 File references are objects with path and sha256. Relative paths resolve against the containing record's documented base; use an intact project package or intentionally remap/revalidate copied evidence. Absolute user-machine paths are not portable by themselves. No client files or logs belong in the reusable skill repository.
 
@@ -25,3 +25,9 @@ Do not accept an earlier AI illustration by relabeling its provenance or attachi
 handoff.py verifies hashes, dimensions, coverage, species bindings, actual ID visibility, mask partition and validation bindings. It does not authenticate a dishonest exporter or independently interpret PDF geometry; inspect upstream evidence.
 
 After this check passes, appearance work inherits native species/asset identity and planting placement. Tiny or hidden fragments do not invalidate the handoff. Material/image-interior work uses a version 2 appearance plan with unchanged geometry and appropriate preservation. Authorized native branch/leaf refinement uses a separate per-ID plan, root/species invariants and fresh candidate ID/depth/alpha passes; natural occlusion changes are reviewed, not forced through old masks. See [finishing](finishing.md). No upstream schema change or independent recognition of every cultivar is required. Plans, generation logs and client evidence belong outside this repository.
+
+## Completed production intake
+
+`native_3d_completion_handoff` remains `certification: not_certified`; its `native_3d_completion_validation` must report `completed_with_assumptions`, native invariants, unchanged renderer pixels and full photo coverage. The checker verifies scene/ledger/image bindings, equal actual frozen/rendered snapshots and complete scene state, source-photo inventory, real renderer manifests/passes and reviewed evidence. It retains assumptions rather than manufacturing passed placement/geometry/camera certification. Older completion handoffs may omit requested_cameras only when independent photo inventory and validation counts establish coverage. All common hashes, species, ID visibility, masks and dimensions still pass unchanged checks.
+
+Carry handoff kind, production status, certification and assumptions into final reports. Finishing acceptance certifies its operations/appearance review only, and never upgrades upstream source/camera certification. Repair ordinary format or export gaps autonomously from source evidence. If a region cannot improve after targeted corrections, preserve it and disclose its disposition while completing the remaining views; never call an uninspected or failed region accepted.
