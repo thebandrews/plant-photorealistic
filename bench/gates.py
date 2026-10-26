@@ -24,7 +24,9 @@ T = {
     'plant_height': 0.10,            # relative change of mask height
     'plant_small_iou': 0.40,
     'plant_pass_share': 0.97,        # segmentation is imperfect: share of tested plants that must pass
-    'plant_hard_fail_iou': 0.30,     # any big plant below this fails the gate outright
+    'plant_hard_fail_iou': 0.60,     # any big plant below this fails the gate outright
+    'plant_hard_shift': 0.05,        # any plant shifted more than this fails the gate outright
+                                     # (calibrated: shipped final max 0.039 / min IoU 0.80; moved plants 0.05-0.22 / 0.41-0.67)
     'plant_struct_corr': 0.12,       # structure fallback: gradient correlation that still counts as the same plant
     'newveg_exg': 0.08,
     'newveg_min_component': 400,
@@ -129,6 +131,8 @@ def gate_plants(view, out, segmenter, native_masks=None):
         if seg_quality < 0.5:
             shift, corr = _structure_check(view, ref_img, out, p)
             ok = shift <= T['plant_shift'] and corr >= T['plant_struct_corr']
+            if shift > T['plant_hard_shift']:
+                hard.append(p['id'])
             row.update(method='structure', shift=round(shift, 4), corr=round(corr, 3), ok=bool(ok), iou=None)
             fails += not ok
             rows.append(row)
@@ -148,7 +152,7 @@ def gate_plants(view, out, segmenter, native_masks=None):
             dh = float(abs(hb - ha) / ha)
             row.update(shift=round(shift, 4), height_change=round(float(dh), 3))
             ok = iou >= T['plant_iou'] and shift <= T['plant_shift'] and dh <= T['plant_height']
-            if iou < T['plant_hard_fail_iou']:
+            if iou < T['plant_hard_fail_iou'] or shift > T['plant_hard_shift']:
                 hard.append(p['id'])
         else:
             ok = iou >= T['plant_small_iou']
