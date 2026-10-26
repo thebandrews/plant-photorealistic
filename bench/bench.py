@@ -29,7 +29,12 @@ import gates as gt  # noqa: E402
 SYNTH_ANCHORS_PER_VIEW = 2
 REAL_ANCHORS = 6
 SPECIES_PAIRS_PER_VIEW = 12
+BLOOM_PLANTS_PER_VIEW = 12      # largest plant of each flowering species, biggest first
+BLOOM_MIN_PX = 2500
+BLOOM_PASS_SHARE = 0.9          # share of checked flowering plants judged in bloom and true to description
 SPECIES_FAIL_CONFIDENCE = 70
+PAIRWISE_REF = 'X0-final'      # side-by-side reference: the shipped output
+PAIRWISE_SANITY = 4             # pairs of a real-photo crop vs a shipped crop, to measure the judge
 
 
 def exp_root(bench):
@@ -138,27 +143,39 @@ def cmd_gate(bench, args, exp_id=None):
     return result
 
 
-def _species_pairs(view, out):
+def _plant_crop(img, p):
+    """Square crop around one plant (its box plus 30%), at most 1024 px."""
     from PIL import Image
-    ref = view.naive_composite()
-    pairs = []
-    for p in view.plants[:SPECIES_PAIRS_PER_VIEW]:
-        x0, y0, x1, y1 = p['box']
-        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-        s = max(x1 - x0, y1 - y0, 256) * 1.3
-        b = [int(max(0, cx - s / 2)), int(max(0, cy - s / 2)), int(min(ref.shape[1], cx + s / 2)),
-             int(min(ref.shape[0], cy + s / 2))]
+    x0, y0, x1, y1 = p['box']
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    s = max(x1 - x0, y1 - y0, 256) * 1.3
+    b = [int(max(0, cx - s / 2)), int(max(0, cy - s / 2)), int(min(img.shape[1], cx + s / 2)),
+         int(min(img.shape[0], cy + s / 2))]
+    part = img[b[1]:b[3], b[0]:b[2]]
+    long = max(part.shape[:2])
+    if long > 1024:
+        k = 1024 / long
+        part = np.asarray(Image.fromarray(part).resize((round(part.shape[1] * k), round(part.shape[0] * k)),
+                                                       Image.LANCZOS))
+    return part
 
-        def cut(img):
-            part = img[b[1]:b[3], b[0]:b[2]]
-            long = max(part.shape[:2])
-            if long > 1024:
-                k = 1024 / long
-                part = np.asarray(Image.fromarray(part).resize((round(part.shape[1] * k), round(part.shape[0] * k)),
-                                                               Image.LANCZOS))
-            return part
-        pairs.append({'key': f"{view.id}:{p['id']}", 'species': p['species'], 'a': cut(ref), 'b': cut(out)})
-    return pairs
+
+def _species_pairs(view, out):
+    ref = view.naive_composite()
+    return [{'key': f"{view.id}:{p['id']}", 'species': p['species'], 'a': _plant_crop(ref, p), 'b': _plant_crop(out, p)}
+            for p in view.plants[:SPECIES_PAIRS_PER_VIEW]]
+
+
+def _bloom_items(bench, view, out):
+    """The largest visible plant of each flowering species (bloom.json), biggest first."""
+    expected = (bench.bloom or {}).get('bloom', {})
+    seen, items = set(), []
+    for p in sorted(view.plants, key=lambda p: -p['pixels']):
+        if p['species'] in expected and p['species'] not in seen and p['pixels'] >= BLOOM_MIN_PX:
+            seen.add(p['species'])
+            items.append({'key': f"{view.id}:{p['id']}", 'species': p['species'], 'flowers': expected[p['species']],
+                          'image': _plant_crop(out, p)})
+    return items[:BLOOM_PLANTS_PER_VIEW]
 
 
 def cmd_judge(bench, args, exp_id=None):
@@ -193,11 +210,44 @@ def cmd_judge(bench, args, exp_id=None):
         for v in bench.views:
             pairs += _species_pairs(v, load_out(bench, d, v))
     spec = jd.species(pairs) if pairs else {}
+    blooms = [it for v in bench.views for it in _bloom_items(bench, v, load_out(bench, d, v))] if bench.bloom else []
+    bloom = jd.bloom(blooms) if blooms else {}
     judged = {'realism': {k: dict(r, kind=meta[k]['kind'], weight=meta[k].get('weight', 0)) for k, r in real.items()},
               'species': {k: dict(r, species=next(p['species'] for p in pairs if p['key'] == k)) for k, r in spec.items()},
+              'bloom': {k: dict(r, species=next(i['species'] for i in blooms if i['key'] == k)) for k, r in bloom.items()},
               'judge_cli': ' '.join(jd._cli()), 'passes': args.passes}
     bl.write_json(d / 'judge.json', judged)
     return judged
+
+
+def cmd_pairwise(bench, args, exp_id=None):
+    """Side by side against the shipped output: for every scored crop, which looks more like a photograph?
+    Sanity pairs (a real-photo crop against a shipped crop) measure the judge in the same batches."""
+    import judge as jd
+    d = exp_dir(bench, exp_id or args.id)
+    ref = exp_dir(bench, PAIRWISE_REF)
+    if d.name == PAIRWISE_REF:
+        return None
+    pairs, meta = [], {}
+    for v in bench.views:
+        out, base = load_out(bench, d, v), load_out(bench, ref, v)
+        for c in bench.crops['views'][v.id]:
+            if c['kind'] == 'anchor_real':
+                continue
+            pairs.append({'key': c['id'], 'x': cr.cut(out, c), 'y': cr.cut(base, c)})
+            meta[c['id']] = c
+    reals = sorted((bench.root / 'anchors' / 'real').glob('*.png'))[1::2][:PAIRWISE_SANITY]
+    shipped = [(v, c) for v in bench.views for c in bench.crops['views'][v.id] if c['kind'] == 'plant']
+    for i, (p, (v, c)) in enumerate(zip(reals, shipped[::3])):
+        pairs.append({'key': f'sanity:{i}', 'x': bl.load_rgb(p), 'y': cr.cut(v.baseline_final, c)})
+    res = jd.pairwise(pairs, passes=args.passes, seed=hash(d.name) & 0xffff)
+    sanity = [r['win'] for k, r in res.items() if k.startswith('sanity:') and r['win'] is not None]
+    result = {'vs': PAIRWISE_REF, 'judge_cli': ' '.join(jd._cli()), 'passes': args.passes,
+              'sanity_accuracy': round(sum(sanity) / len(sanity), 3) if sanity else None,
+              'crops': {k: dict(r, kind=meta[k]['kind'], weight=meta[k].get('weight', 1)) for k, r in res.items()
+                        if not k.startswith('sanity:')}}
+    bl.write_json(d / 'pairwise.json', result)
+    return result
 
 
 def summarize(d):
@@ -230,8 +280,23 @@ def summarize(d):
         sp = judged.get('species', {})
         bad = [k for k, x in sp.items() if not x['same'] and (x.get('confidence') or 0) >= SPECIES_FAIL_CONFIDENCE]
         s['species'] = {'pairs': len(sp), 'different': bad, 'pass': not bad}
+        bl_ = judged.get('bloom') or {}
+        if bl_:
+            ok = [k for k, x in bl_.items() if x['in_bloom'] and x['matches']]
+            share = len(ok) / len(bl_)
+            s['bloom'] = {'checked': len(bl_), 'in_bloom': len(ok), 'share': round(share, 3),
+                          'pass': share >= BLOOM_PASS_SHARE, 'missing': sorted(x['species'] for k, x in bl_.items()
+                                                                               if k not in ok)}
         if s['gates_pass'] is not None:
-            s['qualified'] = bool(s['gates_pass'] and s['species']['pass'])
+            s['qualified'] = bool(s['gates_pass'] and s['species']['pass'] and s.get('bloom', {}).get('pass', True))
+    if (d / 'pairwise.json').exists():
+        pw = bl.read_json(d / 'pairwise.json')
+        scored = [(x['win'], x['weight']) for x in pw['crops'].values() if x['win'] is not None]
+        wsum = sum(w for _, w in scored) or 1
+        s['win_vs_shipped'] = round(sum(x * w for x, w in scored) / wsum, 3) if scored else None
+        s['pairwise_sanity'] = pw.get('sanity_accuracy')
+    elif d.name == PAIRWISE_REF:
+        s['win_vs_shipped'] = 0.5
     bl.write_json(d / 'scores.json', s)
     return s
 
@@ -239,9 +304,11 @@ def summarize(d):
 def cmd_score(bench, args):
     cmd_gate(bench, args, args.id)
     cmd_judge(bench, args, args.id)
+    if not args.no_pairwise:
+        cmd_pairwise(bench, args, args.id)
     s = summarize(exp_dir(bench, args.id))
-    print(json.dumps({k: s.get(k) for k in ('id', 'qualified', 'gates_pass', 'realism', 'photo_share',
-                                            'judge_anchor_accuracy', 'giveaways')}, indent=2))
+    print(json.dumps({k: s.get(k) for k in ('id', 'qualified', 'gates_pass', 'realism', 'photo_share', 'win_vs_shipped',
+                                            'pairwise_sanity', 'judge_anchor_accuracy', 'giveaways')}, indent=2))
 
 
 def cmd_board(bench, args):
@@ -268,11 +335,13 @@ def main(argv=None):
     p.add_argument('--no-species', action='store_true')
     p = sub.add_parser('score'); p.add_argument('id'); p.add_argument('--passes', type=int, default=2)
     p.add_argument('--no-species', action='store_true'); p.add_argument('--no-plants', action='store_true')
+    p.add_argument('--no-pairwise', action='store_true')
+    p = sub.add_parser('pairwise'); p.add_argument('id'); p.add_argument('--passes', type=int, default=2)
     sub.add_parser('board')
     args = ap.parse_args(argv)
     bench = bl.Bench(args.bench)
     {'init-crops': cmd_init_crops, 'baselines': cmd_baselines, 'new': cmd_new, 'gate': cmd_gate,
-     'judge': cmd_judge, 'score': cmd_score, 'board': cmd_board}[args.cmd](bench, args)
+     'judge': cmd_judge, 'pairwise': cmd_pairwise, 'score': cmd_score, 'board': cmd_board}[args.cmd](bench, args)
 
 
 if __name__ == '__main__':

@@ -113,3 +113,45 @@ def test_summary_ranks_on_gates_and_species(tiny, monkeypatch):
     assert s['judge_anchor_accuracy'] == 0.5
     assert s['giveaways'] == {'plant_anatomy': 1}
     assert s['species']['different'] == ['v1:P-2'] and s['qualified'] is False
+
+
+def test_pairwise_cancels_position_bias(tmp_path, monkeypatch):
+    import judge as jd
+    fake = tmp_path / 'fake_judge.py'
+    fake.write_text('import json, re, sys\n'
+                    'n = len(re.findall(r"^\d+\. ", sys.stdin.read(), re.M))\n'
+                    'print(json.dumps([{"pair": i, "more_real": 1} for i in range(1, n + 1)]))\n')
+    monkeypatch.setenv('PHOTOREAL_JUDGE_CLI', f'{sys.executable} {fake}')
+    img = np.zeros((8, 8, 3), np.uint8)
+    res = jd.pairwise([{'key': f'k{i}', 'x': img, 'y': img} for i in range(5)], batch_size=2, passes=2)
+    assert all(r['win'] == 0.5 and r['votes'] == 2 for r in res.values())
+
+
+def test_summary_reports_win_vs_shipped(tiny, monkeypatch):
+    monkeypatch.setenv('PHOTOREAL_EXPERIMENTS', str(tiny.root.parent / 'exps'))
+    d = bb.new_experiment(tiny, 'E2', 'D', 'h', 'm')
+    bl.write_json(d / 'pairwise.json', {'vs': 'X0-final', 'sanity_accuracy': 1.0, 'crops': {
+        'v1-overview': {'win': 1.0, 'weight': 2.0, 'kind': 'overview'},
+        'v1-plant-01': {'win': 0.25, 'weight': 1.0, 'kind': 'plant'}}})
+    s = bb.summarize(d)
+    assert s['win_vs_shipped'] == round((2.0 + 0.25) / 3, 3) and s['pairwise_sanity'] == 1.0
+
+
+def test_bloom_items_and_qualification(tiny, monkeypatch):
+    bl.write_json(tiny.root / 'bloom.json', {'bloom': {'Salvia nemorosa': 'rose-magenta spikes'},
+                                             'not_required': {'Agave montana': 'tall stalk'}})
+    v = tiny.view('v1')
+    items = bb._bloom_items(tiny, v, v.baseline_final)
+    assert [i['key'] for i in items] == ['v1:P-2'] and items[0]['flowers'] == 'rose-magenta spikes'
+    monkeypatch.setenv('PHOTOREAL_EXPERIMENTS', str(tiny.root.parent / 'exps'))
+    d = bb.new_experiment(tiny, 'E3', 'D', 'h', 'm')
+    bl.write_json(d / 'gates.json', {'pass': True, 'views': {}})
+    judged = {'realism': {}, 'species': {}, 'bloom': {
+        'v1:P-2': {'in_bloom': False, 'matches': False, 'confidence': 90, 'species': 'Salvia nemorosa'}}}
+    bl.write_json(d / 'judge.json', judged)
+    s = bb.summarize(d)
+    assert s['bloom'] == {'checked': 1, 'in_bloom': 0, 'share': 0.0, 'pass': False, 'missing': ['Salvia nemorosa']}
+    assert s['qualified'] is False
+    judged['bloom']['v1:P-2'].update(in_bloom=True, matches=True)
+    bl.write_json(d / 'judge.json', judged)
+    assert bb.summarize(d)['qualified'] is True

@@ -49,7 +49,7 @@ def build(bench, root, rows):
                 _web(cr.cut(out, c), board / r2, 640)
                 imgs[v.id]['crops'].append({'src': r2, 'kind': c['kind'], 'label': (c.get('focus') or {}).get('species', c['kind'])})
         entries.append(dict(s, images=imgs))
-    entries.sort(key=lambda e: (e.get('qualified') is not True, -(e.get('realism') or -1)))
+    entries.sort(key=lambda e: (e.get('qualified') is not True, -(e.get('win_vs_shipped') or 0), -(e.get('realism') or -1)))
     data = json.dumps({'bench': bench.name, 'views': [v.id for v in bench.views], 'entries': entries})
     page = TEMPLATE.replace('__DATA__', data.replace('</', '<\\/')).replace('__BENCH__', html.escape(bench.name))
     (board / 'index.html').write_text(page, encoding='utf-8')
@@ -93,7 +93,7 @@ figcaption { font-size:.72rem; color:var(--muted); white-space:nowrap; overflow:
 @media (max-width:900px) { .exp { grid-template-columns:minmax(0,1fr); } .meta { border-right:0; border-bottom:1px solid var(--rule); } .view { grid-template-columns:repeat(2,minmax(0,1fr)); } .view figure:first-child { grid-column:1 / -1; } }
 </style>
 <div class="wrap">
-  <header><h1>Photoreal Lab Board</h1><p class="sub">Bench __BENCH__. Qualified runs (every gate passed) ranked by judged realism; disqualified runs below. Realism = weighted mean of the judge's photo probability over fixed crops.</p></header>
+  <header><h1>Photoreal Lab Board</h1><p class="sub">Bench __BENCH__. Qualified runs (every gate passed) ranked by how often the judge picks them over the shipped output side by side (50% = no better), then by realism; disqualified runs below. Realism = weighted mean of the judge's photo probability over fixed crops.</p></header>
   <main id="list"></main>
 </div>
 <script id="data" type="application/json">__DATA__</script>
@@ -106,12 +106,14 @@ figcaption { font-size:.72rem; color:var(--muted); white-space:nowrap; overflow:
     const q = e.qualified === true; if (q) rank++;
     const gates = [];
     Object.entries(e.gates || {}).forEach(([v, g]) => Object.entries(g).forEach(([name, ok]) => gates.push(el('span', { class: 'chip' + (ok ? '' : ' no'), text: v + ' ' + name }))));
+    if (e.bloom) gates.push(el('span', { class: 'chip' + (e.bloom.pass ? '' : ' no'), text: 'in bloom ' + e.bloom.in_bloom + '/' + e.bloom.checked }));
     if (e.species) gates.push(el('span', { class: 'chip' + (e.species.pass ? '' : ' no'), text: 'species ' + (e.species.pairs - e.species.different.length) + '/' + e.species.pairs }));
     const gw = Object.entries(e.giveaways || {}).slice(0, 4).map(([k, n]) => el('span', { class: 'chip gw', text: k.replace(/_/g, ' ') + ' ' + n }));
     const meta = el('div', { class: 'meta' },
       el('div', { class: 'rank', text: q ? '#' + rank : 'DQ' }), el('div', { class: 'id', text: e.id }),
       el('div', { class: 'hyp', text: (e.hypothesis || '') + (e.method ? ' · ' + e.method : '') }),
       el('div', { class: 'score' },
+        el('div', {}, el('b', { text: e.win_vs_shipped != null ? Math.round(e.win_vs_shipped * 100) + '%' : '–' }), el('span', { text: 'beats shipped' })),
         el('div', {}, el('b', { text: e.realism != null ? e.realism : '–' }), el('span', { text: 'realism' })),
         el('div', {}, el('b', { text: e.photo_share != null ? Math.round(e.photo_share * 100) + '%' : '–' }), el('span', { text: 'crops judged photo' })),
         el('div', {}, el('b', { text: e.gpu_seconds != null ? e.gpu_seconds : '–' }), el('span', { text: 'GPU-s' })),

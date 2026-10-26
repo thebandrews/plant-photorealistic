@@ -42,7 +42,8 @@ Give an empty giveaways list when you find none."""
 
 SPECIES_PROMPT = """Each pair below shows the same location in two images of a planted garden: A is a 3D render
 used as the design, B is a finished image. The design may have been made more realistic in B, which can change
-leaf detail, texture and lighting. Decide for each pair whether B still shows the same plant at that spot:
+leaf detail, texture and lighting, and a flowering plant may be shown in bloom in B (flowers that belong to the
+same plant are not a change). Decide for each pair whether B still shows the same plant at that spot:
 the same species or cultivar (leaf shape and arrangement, growth habit, flower colour and form) and roughly the
 same size and position. A different plant, a missing plant, an extra plant or a changed species means "same": false.
 Open both files of every pair with the Read tool.
@@ -148,6 +149,113 @@ def species(pairs, batch_size=8):
                 if 1 <= n <= len(batch):
                     out[batch[n - 1]['key']] = {'same': bool(r.get('same')), 'confidence': r.get('confidence'),
                                                 'note': r.get('note', '')}
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+    return out
+
+
+PAIRWISE_PROMPT = """You are a forensic photo examiner. Each numbered pair below shows the same scene region in two
+images. At most one of them is an unedited camera photograph; often both contain computer-generated content
+(3D rendering, AI generation or compositing). For each pair, decide which image looks more like an unedited
+camera photograph: plants (natural anatomy, variation, fine structure), materials, soil and paving texture,
+light and shadows, edges, and camera signature. Answer "tie" only when the two look equally real or identical.
+Open both files of every pair with the Read tool.
+
+Pairs:
+{pairs}
+
+Reply with JSON only: [{{"pair": <n>, "more_real": 1 or 2 or "tie", "confidence": <0-100>, "note": "<short>"}}]"""
+
+
+def pairwise(pairs, batch_size=6, passes=2, seed=0):
+    """pairs: [{'key', 'x' (candidate crop), 'y' (reference crop)}] -> {key: {'win': 0..1, 'votes', 'notes'}}.
+
+    win is the share of votes that found x more real (a tie counts half). The first pass puts x first or second
+    at random; each later pass swaps every pair, so position bias cancels."""
+    rng = random.Random(seed)
+    votes, x_first = {}, {}
+    for pas in range(passes):
+        order = pairs[:]
+        rng.shuffle(order)
+        for pr in order:
+            x_first[pr['key']] = rng.random() < 0.5 if pas == 0 else not x_first[pr['key']]
+        for i in range(0, len(order), batch_size):
+            batch = order[i:i + batch_size]
+            folder = Path(tempfile.mkdtemp(prefix='pairwise-'))
+            try:
+                lines = []
+                for n, pr in enumerate(batch, 1):
+                    a, b = (pr['x'], pr['y']) if x_first[pr['key']] else (pr['y'], pr['x'])
+                    tag = uuid.uuid4().hex[:6]
+                    Image.fromarray(a).save(folder / f'pair{n}-{tag}-1.png')
+                    Image.fromarray(b).save(folder / f'pair{n}-{tag}-2.png')
+                    lines.append(f'{n}. pair{n}-{tag}-1.png (image 1) and pair{n}-{tag}-2.png (image 2)')
+                for attempt in range(2):
+                    try:
+                        reply = _parse_list(ask(PAIRWISE_PROMPT.format(pairs='\n'.join(lines)), folder))
+                        break
+                    except (ValueError, RuntimeError):
+                        if attempt:
+                            raise
+                for r in reply:
+                    n = int(r.get('pair', 0))
+                    if not 1 <= n <= len(batch):
+                        continue
+                    key = batch[n - 1]['key']
+                    pick = str(r.get('more_real')).strip().lower()
+                    if pick == 'tie':
+                        w = 0.5
+                    elif pick in ('1', '2'):
+                        w = 1.0 if (pick == '1') == x_first[key] else 0.0
+                    else:
+                        continue
+                    votes.setdefault(key, []).append({'win': w, 'note': r.get('note', '')})
+            finally:
+                shutil.rmtree(folder, ignore_errors=True)
+    out = {}
+    for pr in pairs:
+        vs = votes.get(pr['key'], [])
+        out[pr['key']] = {'win': round(sum(v['win'] for v in vs) / len(vs), 3) if vs else None, 'votes': len(vs),
+                          'notes': [v['note'] for v in vs if v.get('note')][:2]}
+    return out
+
+
+BLOOM_PROMPT = """Each image below is a close crop of one plant in a garden picture, with the flowers that plant should
+show in full bloom. Open every file with the Read tool and decide whether the plant is shown in bloom: open flowers
+clearly visible on this plant (not buds only, not only foliage), and whether they match the description (colour,
+form, how they are carried). Judge the plant at the centre of the crop.
+
+{items}
+
+Reply with JSON only: [{{"file": "<name>", "in_bloom": true or false, "matches": true or false,
+  "confidence": <0-100>, "note": "<short>"}}]"""
+
+
+def bloom(items, batch_size=8):
+    """items: [{'key', 'image', 'flowers' (expected description)}] -> {key: {in_bloom, matches, confidence, note}}"""
+    out = {}
+    for i in range(0, len(items), batch_size):
+        batch = items[i:i + batch_size]
+        folder = Path(tempfile.mkdtemp(prefix='bloom-'))
+        try:
+            names, lines = {}, []
+            for it in batch:
+                name = f'plant-{uuid.uuid4().hex[:8]}.png'
+                Image.fromarray(it['image']).save(folder / name)
+                names[name] = it
+                lines.append(f'- {name}: should show {it["flowers"]}')
+            for attempt in range(2):
+                try:
+                    reply = _parse_list(ask(BLOOM_PROMPT.format(items='\n'.join(lines)), folder))
+                    break
+                except (ValueError, RuntimeError):
+                    if attempt:
+                        raise
+            for r in reply:
+                it = names.get(r.get('file'))
+                if it is not None:
+                    out[it['key']] = {'in_bloom': bool(r.get('in_bloom')), 'matches': bool(r.get('matches')),
+                                      'confidence': r.get('confidence'), 'note': r.get('note', '')}
         finally:
             shutil.rmtree(folder, ignore_errors=True)
     return out

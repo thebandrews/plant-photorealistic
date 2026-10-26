@@ -22,6 +22,7 @@ The bench folder holds client imagery, so it lives outside every repo:
 | `views/<v>/baseline-run/` | the shipped run's refined render: `straight_rgb.png` + `alpha.png` (landscape layer), its IDs/depth, `transition_alpha.png`, cleanup masks |
 | `views/<v>/baseline/final.png` | the shipped composite (X0-final) |
 | `anchors/real/` | crops of the project's other site photos: real photographs for judge calibration |
+| `bloom.json` | flowering species and the flowers each should show; exempt species and why |
 | `crops.json` | the fixed judge crops (frozen; never re-chosen once experiments are scored) |
 
 Experiments live next to the bench in `experiments/` (or `PHOTOREAL_EXPERIMENTS`).
@@ -49,6 +50,7 @@ set `PHOTOREAL_JUDGE_CLI` to use another judge, `PHOTOREAL_JUDGE_MODEL` to pin a
 | plants | every plant ≥ 400 visible px: SAM mask of the output vs SAM mask of the render (box + 4 points from its own pixels). ≥ 2500 px: IoU ≥ 0.70, median shift ≤ 3% of its box diagonal, height (2–98th pct) within ±10%. Smaller: IoU ≥ 0.40. Plants SAM can't isolate in the render fall back to gradient alignment (shift ≤ 3%, correlation ≥ 0.12) | ≥ 97% of plants pass, none with IoU < 0.30 |
 | new plants | green vegetation on open ground (beds, terrain) away from plants, beyond the raw render | ≤ 0.2% of the image |
 | species | (judge) the 12 largest plants per view: render crop vs output crop, "same plant and species?" | no confident "different" |
+| bloom | (judge) the largest plant of each flowering species in `bloom.json`, per view: in bloom, flowers true to the description | ≥ 90% |
 
 Controls: `X0-final` (shipped output), `X0-raw3d` (render over the photo, no finishing), `X0-broken`
 (plants moved, blobs painted, sky changed: must fail).

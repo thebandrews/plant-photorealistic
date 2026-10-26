@@ -192,6 +192,12 @@ class Bench:
         p = self.root / 'crops.json'
         return read_json(p) if p.exists() else None
 
+    @property
+    def bloom(self):
+        """bloom.json: {'rule', 'bloom': {species: expected flowers}, 'not_required': {species: why}} or None."""
+        p = self.root / 'bloom.json'
+        return read_json(p) if p.exists() else None
+
     def verify(self):
         """Check every frozen file against its recorded hash. Returns the list of mismatches."""
         bad = []

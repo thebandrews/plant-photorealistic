@@ -17,6 +17,11 @@ You are running **one** experiment from the photoreal lab backlog. Your job is t
    beyond the bench's 3840×2560.
 5. **Client data stays out of git.** Outputs, crops and intermediate images live only in the experiment folder.
 6. **Never print or store SAS URLs, keys or tokens.**
+7. **Flowering plants are shown in full bloom.** `bloom.json` in the bench lists every flowering species with the
+   flowers it should show (colour, form, how they are carried) and the species that are exempt (tall flower stalks,
+   conifers, ferns). Flowers stay within the plant's own footprint and height, so the plants gate still passes.
+   The judge checks the largest plant of each flowering species in both views; under 90% in bloom and true to the
+   description disqualifies the run. The shipped output shows 5 of 22.
 
 ## Inputs
 
@@ -25,6 +30,20 @@ You are running **one** experiment from the photoreal lab backlog. Your job is t
 `object-ids.npy` + `handoff/candidate-catalog-v3.json` (what each pixel is), `depth.npy`, `structural.png`,
 `projected-plants.json` (species per plant). The Blender scene is on the VM at the path in
 `bench-manifest.json` (`scene`); save any changed scene as a new file in your experiment folder.
+
+## Tools
+
+- `bench/lab/comfy.py`: diffusion on the lab's RunPod endpoint (Qwen-Image, Qwen-Image-Edit 2509/2511, InstantX
+  ControlNet Union and Inpainting, Lightning and Anything2Real LoRAs). `comfy.run(workflow, images)`; `comfy.qwen_edit`.
+- `bench/lab/plantcheck.py`: the plants gate for chosen plants, so a generate-and-check loop can test each plant
+  as soon as it is regenerated: `PlantChecker('p49').check(composite, ids)`. About 15 s per call; check several
+  plants per call.
+
+## Scoring
+
+Ranking is by `win_vs_shipped`: side by side with the shipped output, the share of crops the judge finds more like
+a photograph (50% = no better). The absolute realism score is reported too, but in round 1 every run scored 2–4
+of 100, so it can't separate runs.
 
 ## Deliverables
 
