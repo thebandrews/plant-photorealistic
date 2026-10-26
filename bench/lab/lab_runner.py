@@ -87,6 +87,7 @@ no plant may move, disappear, appear, or change species or size; pixels outside 
 cleaned photo; bench\\ is locked (never edit it); stay inside the GPU budget; never print keys or SAS URLs.
 
 - Your code: this worktree {wt} (branch exp/{spec['id']}). Put experiment code under photoreal\\ or scripts\\.
+  Don't run git commit or change git config: the lab runner commits your changes when you finish.
 - Experiment folder: {exp_dir}. Write out\\p49.png, out\\p51.png (3840x2560 RGB), run.json and NOTES.md there.
 - Bench (read only): {BENCH}
 - Python: `python` (lab venv: numpy, pillow, opencv, scipy, torch CPU, transformers).
