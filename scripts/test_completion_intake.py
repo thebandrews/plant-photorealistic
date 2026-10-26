@@ -1,6 +1,7 @@
 """Portable synthetic intake regressions; never production certification evidence."""
 import copy
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -77,6 +78,79 @@ class CompletionIntakeTests(unittest.TestCase):
     def test_certification_cannot_upgrade(self):
         self.data['certification']='certified'
         with self.assertRaisesRegex(ValueError,'certification'):check(self.data,self.p)
+
+    def render_skill_inventory(self, unproven=True):
+        """The render skill's intake form: 'files', paths relative to the inventory, plus a photo with no view."""
+        prod = self.p/'production'; prod.mkdir(exist_ok=True)
+        (self.p/'other.jpg').write_bytes(b'Synthetic second site photo')
+        files = [{'id': 'front-photo', 'role': 'site_photo', 'path': '../native.png',
+                  'sha256': self.data['views'][0]['image']['sha256']},
+                 {'id': 'other', 'role': 'site_photo', 'path': '../other.jpg', 'sha256': record(self.p/'other.jpg')['sha256']},
+                 {'id': 'plan', 'role': 'plan_and_schedule', 'path': '../scene.blend',
+                  'sha256': record(self.p/'scene.blend')['sha256']}]
+        self.data['source_inventory'] = save(prod/'source-inventory.json', {'schema_version': 1, 'files': files})
+        if unproven:
+            self.data['unproven_photos'] = ['other']
+
+    def test_render_skill_inventory_with_unproven_photo_accepted(self):
+        self.render_skill_inventory()
+        self.assertEqual(check(self.data,self.p)['certification'],'not_certified')
+
+    def test_site_photo_without_view_rejected(self):
+        self.render_skill_inventory(unproven=False)
+        with self.assertRaisesRegex(ValueError,'completion view'):check(self.data,self.p)
+
+    def test_unknown_unproven_photo_rejected(self):
+        self.render_skill_inventory()
+        self.data['unproven_photos'] = ['other', 'not-in-inventory']
+        with self.assertRaisesRegex(ValueError,'source inventory'):check(self.data,self.p)
+
+    def test_manifest_with_relative_paths_accepted(self):
+        """Renderer manifests reference files relative to themselves; the handoff uses absolute paths."""
+        view = self.data['views'][0]
+        mpath = Path(view['renderer_manifest']['path'])
+        manifest = read(mpath)
+        rel = lambda ref: dict(ref, path=os.path.relpath(ref['path'], mpath.parent))
+        for key in ('native_scene', 'image', 'frozen_snapshot', 'scene_state'):
+            manifest[key] = rel(manifest[key])
+        manifest['render_evidence'] = {k: rel(v) for k, v in manifest['render_evidence'].items()}
+        view['renderer_manifest'] = save(mpath, manifest)
+        self.assertEqual(check(self.data,self.p)['certification'],'not_certified')
+        manifest['image'] = dict(manifest['image'], sha256='0' * 64)
+        view['renderer_manifest'] = save(mpath, manifest)
+        with self.assertRaises(ValueError):check(self.data,self.p)
+
+    def completion_render_manifest(self, pixel_offset=0.0):
+        """The render skill's native_completion_render manifest: roots come from the frozen transforms through
+        the renderer's world_to_clip; there is no native_export. pixel_offset moves the frozen root sideways."""
+        view = self.data['views'][0]
+        w, h = view['dimensions']
+        projected = read(view['projected_plants']['path'])
+        px, py = projected['plants'][0]['root_pixel']
+        snap_path = Path(self.data['frozen_snapshot']['path'])
+        snapshot = read(snap_path)
+        x, y = 2 * (px + pixel_offset) / w - 1, 1 - 2 * py / h
+        snapshot['instances'][0]['matrix_world'] = [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, 2, 0, 0, 0, 1]
+        self.data['frozen_snapshot'] = self.data['rendered_snapshot'] = save(snap_path, snapshot)
+        projected.update(camera_id='front', image_sha256=view['image']['sha256'])
+        view['projected_plants'] = save(Path(view['projected_plants']['path']), projected)
+        proof = read(view['mask_provenance']['evidence']['path'])
+        proof['projected_plants'] = view['projected_plants']
+        view['mask_provenance']['evidence'] = save(self.p/'mask-proof.json', proof)
+        mpath = Path(view['renderer_manifest']['path'])
+        manifest = read(mpath)
+        manifest.pop('native_export')
+        manifest.update(kind='native_completion_render', frozen_snapshot=self.data['frozen_snapshot'],
+                        world_to_clip=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]])
+        view['renderer_manifest'] = save(mpath, manifest)
+
+    def test_completion_render_manifest_accepted(self):
+        self.completion_render_manifest()
+        self.assertEqual(check(self.data,self.p)['certification'],'not_certified')
+
+    def test_completion_render_moved_root_rejected(self):
+        self.completion_render_manifest(pixel_offset=3.0)
+        with self.assertRaisesRegex(ValueError,'Root projection'):check(self.data,self.p)
 
     def test_changed_native_state_rejected(self):
         self.data['rendered_scene_state']=save(self.p/'changed-state.json',{'native_scene':self.data['native_scene'],'settings':{'fixed':False}})
