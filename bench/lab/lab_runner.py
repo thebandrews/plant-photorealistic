@@ -4,7 +4,7 @@ The task runs as the VM user (register-lab-runner.ps1), so Codex and Claude Code
 Each queued experiment gets its own git worktree (branch exp/<id>), experiment folder and GPU budget:
 
   C:\\Workstation\\lab\\queue\\<id>.json   {"id", "layer", "agent": "codex"|"claude", "hypothesis", "method",
-                                         "brief", "budget_gpu_seconds", "timeout_minutes"}
+                                         "brief", "budget_gpu_seconds", "timeout_minutes", "bench" (optional)}
   -> running\\<id>.json -> done\\<id>.json (agent result, bench violations, score)
 
 After the agent finishes, its code changes are committed to exp/<id>, and the locked bench copy (repo\\bench,
@@ -59,7 +59,7 @@ def git(*args, cwd=REPO, check=True):
 
 def lab_gpu_used():
     total = 0.0
-    for f in EXPERIMENTS.glob('*/gpu-ledger.json'):
+    for f in LAB.glob('experiments*/*/gpu-ledger.json'):
         try:
             total += sum(e.get('gpu_seconds', 0) for e in json.loads(f.read_text())['entries'])
         except (OSError, ValueError, KeyError):
@@ -67,11 +67,22 @@ def lab_gpu_used():
     return round(total, 1)
 
 
+def bench_for(spec):
+    """The spec's bench ("bench": a folder next to the default bench), else the default bench."""
+    return str(Path(BENCH).parent / spec['bench']) if spec.get('bench') else BENCH
+
+
+def experiments_for(spec):
+    """The default bench's experiments live in experiments, another bench's in experiments-<bench>."""
+    return LAB / f'experiments-{spec["bench"]}' if spec.get('bench') else EXPERIMENTS
+
+
 def agent_env(spec, exp_dir):
     env = dict(os.environ)
     env['Path'] = os.pathsep.join([str(VENV / 'Scripts'), env.get('Path', ''),
                                    os.path.expanduser(r'~\.local\bin'), os.path.expandvars(r'%APPDATA%\npm')])
-    env.update(PHOTOREAL_BENCH=BENCH, PHOTOREAL_EXPERIMENTS=str(EXPERIMENTS), PHOTOREAL_EXPERIMENT_ID=spec['id'],
+    env.update(PHOTOREAL_BENCH=bench_for(spec), PHOTOREAL_EXPERIMENTS=str(experiments_for(spec)),
+               PHOTOREAL_EXPERIMENT_ID=spec['id'],
                PLANT_GPU_BUDGET_SECONDS=str(spec.get('budget_gpu_seconds', 1800)),
                PLANT_GPU_BUDGET_FILE=str(exp_dir / 'gpu-ledger.json'),
                PHOTOREAL_LAB_GPU_SECONDS=str(LAB_GPU_SECONDS), PYTHONIOENCODING='utf-8')
@@ -89,7 +100,7 @@ cleaned photo; bench\\ is locked (never edit it); stay inside the GPU budget; ne
 - Your code: this worktree {wt} (branch exp/{spec['id']}). Put experiment code under photoreal\\ or scripts\\.
   Don't run git commit or change git config: the lab runner commits your changes when you finish.
 - Experiment folder: {exp_dir}. Write out\\p49.png, out\\p51.png (3840x2560 RGB), run.json and NOTES.md there.
-- Bench (read only): {BENCH}
+- Bench (read only): {bench_for(spec)}
 - Python: `python` (lab venv: numpy, pillow, opencv, scipy, torch CPU, transformers).
 - Diffusion on RunPod: `from lab import comfy` after adding {wt}\\bench to sys.path. comfy.run(workflow, images)
   returns PIL images; comfy.qwen_edit(...) builds a Qwen-Image-Edit workflow; comfy.MODELS lists the models.
@@ -118,7 +129,7 @@ def run_codex(spec, wt, exp_dir, logs, env, timeout):
 def run_claude(spec, wt, exp_dir, logs, env, timeout):
     cmd = [str(CLAUDE), '-p', prompt_for(spec, wt, exp_dir), '--output-format', 'json',
            '--permission-mode', 'acceptEdits', '--allowedTools', CLAUDE_TOOLS,
-           '--add-dir', str(exp_dir), '--add-dir', BENCH]
+           '--add-dir', str(exp_dir), '--add-dir', bench_for(spec)]
     if spec.get('model'):
         cmd += ['--model', spec['model']]
     out_path = logs / 'claude-output.json'
@@ -163,7 +174,7 @@ def run_one(queue_file):
         wt = LAB / 'worktrees' / eid
         if not wt.exists():
             git('worktree', 'add', '-b', f'exp/{eid}', str(wt), base)
-        exp_dir = EXPERIMENTS / eid
+        exp_dir = experiments_for(spec) / eid
         env = agent_env(spec, exp_dir)
         if not (exp_dir / 'experiment.json').exists():
             r = bench_py('new', eid, '--layer', spec['layer'], '--hypothesis', spec['hypothesis'],
@@ -211,7 +222,7 @@ def rescore(spec, running, logs):
     eid = spec['id']
     done = LAB / 'done' / f'{eid}.json'
     result = json.loads(done.read_text(encoding='utf-8')) if done.exists() else {'id': eid}
-    exp_dir = EXPERIMENTS / eid
+    exp_dir = experiments_for(spec) / eid
     env = agent_env(spec, exp_dir)
     with score_lock:
         r = bench_py('score', eid, env=env)

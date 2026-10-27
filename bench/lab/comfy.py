@@ -94,7 +94,7 @@ def _record(path, entry):
 def lab_used():
     """GPU seconds over every experiment's ledger (render-remote and diffusion jobs) plus ad-hoc jobs."""
     root = os.environ.get('PHOTOREAL_EXPERIMENTS')
-    files = list(Path(root).glob('*/gpu-ledger.json')) if root and Path(root).is_dir() else []
+    files = list(Path(root).parent.glob('experiments*/*/gpu-ledger.json')) if root and Path(root).is_dir() else []
     return sum(_used(f) for f in files + [Path(ADHOC_LEDGER)])
 
 
