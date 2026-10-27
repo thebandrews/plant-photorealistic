@@ -77,6 +77,11 @@ def experiments_for(spec):
     return LAB / f'experiments-{spec["bench"]}' if spec.get('bench') else EXPERIMENTS
 
 
+def run_key(spec):
+    """Name of the experiment's running/done record and log folder (bench-qualified off the default bench)."""
+    return f'{spec["bench"]}--{spec["id"]}' if spec.get('bench') else spec['id']
+
+
 def agent_env(spec, exp_dir):
     env = dict(os.environ)
     env['Path'] = os.pathsep.join([str(VENV / 'Scripts'), env.get('Path', ''),
@@ -159,11 +164,11 @@ def bench_py(*args, env):
 def run_one(queue_file):
     spec = json.loads(queue_file.read_text(encoding='utf-8'))
     eid = spec['id']
-    running = LAB / 'running' / f'{eid}.json'
+    running = LAB / 'running' / f'{run_key(spec)}.json'
     running.parent.mkdir(parents=True, exist_ok=True)
     os.replace(queue_file, running)
     result = {'id': eid, 'spec': spec, 'started': now()}
-    logs = LAB / 'logs' / eid
+    logs = LAB / 'logs' / run_key(spec)
     logs.mkdir(parents=True, exist_ok=True)
     if spec.get('rescore'):
         return rescore(spec, running, logs)
@@ -212,7 +217,7 @@ def run_one(queue_file):
         result['error'] = f'{type(e).__name__}: {e}'
     result['finished'] = now()
     result['lab_gpu_seconds'] = lab_gpu_used()
-    write_json(LAB / 'done' / f'{eid}.json', result)
+    write_json(LAB / 'done' / f'{run_key(spec)}.json', result)
     running.unlink(missing_ok=True)
     return result
 
@@ -220,7 +225,7 @@ def run_one(queue_file):
 def rescore(spec, running, logs):
     """{"id": ..., "rescore": true}: score an existing experiment again with the current bench, no agent."""
     eid = spec['id']
-    done = LAB / 'done' / f'{eid}.json'
+    done = LAB / 'done' / f'{run_key(spec)}.json'
     result = json.loads(done.read_text(encoding='utf-8')) if done.exists() else {'id': eid}
     exp_dir = experiments_for(spec) / eid
     env = agent_env(spec, exp_dir)
