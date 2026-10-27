@@ -216,3 +216,30 @@ def test_unchanged_plants_keep_the_baseline_bloom_verdict(tiny, monkeypatch):
     out = bb.judge_bloom(tiny, d, NoJudge)
     assert out['v1:P-2']['in_bloom'] is False and 'inherited_from' not in out['v1:P-2']
     assert out['v1:P-2']['species'] == 'Salvia nemorosa'
+
+
+def test_bloom_crop_centres_zooms_and_dims_around_the_plant(tiny):
+    v = tiny.view('v1')
+    p = next(p for p in v.plants if p['id'] == 'P-1')                 # 40x40 px plant at x 40-80, y 110-150
+    img = np.full((H, W, 3), 200, np.uint8)
+    crop = bb._bloom_crop(img, v, p)
+    assert max(crop.shape[:2]) == bb.BLOOM_CROP_PX                      # small plant zoomed in
+    h, w = crop.shape[:2]
+    assert crop[h // 2, w // 2].min() >= 195                            # the plant stays bright at the centre
+    assert crop[2, 2].max() <= round(200 * bb.BLOOM_DIM) + 2            # the rest is dimmed
+
+
+def test_flagged_species_pairs_are_rechecked_by_majority(monkeypatch):
+    import judge as jd
+    calls = []
+
+    def fake(pairs, batch_size):
+        calls.append([p['key'] for p in pairs])
+        n = len(calls)
+        return {p['key']: {'same': True, 'extra': p['key'] == 'a' and n == 1, 'confidence': 80, 'note': ''}
+                for p in pairs}
+    monkeypatch.setattr(jd, '_species_pass', fake)
+    out = jd.species([{'key': 'a'}, {'key': 'b'}], recheck=2)
+    assert calls[1:] == [['a'], ['a']]                                  # only the flagged pair is asked again
+    assert out['a']['extra'] is False and out['a']['votes'] == 3 and out['a']['extra_votes'] == 1
+    assert out['b']['votes'] == 1 and out['b']['extra'] is False

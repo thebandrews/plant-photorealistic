@@ -50,7 +50,8 @@ change. Open both files of every pair with the Read tool and answer two question
   if it is missing, moved, or has become a different plant (another growth form, leaf type, or flower colour/form
   than listed). For open ground, same is true unless the ground became something else (paving, a plant).
 - extra: does B contain, anywhere in the crop, a plant that A does not have, or flowers that are not carried by a
-  plant that is in A?
+  plant that is in A? Flowers that grow from a plant A has (among its leaves, or on stems reaching out from it) are
+  not extra, even where A shows that plant with no flowers or with flowers of another size or shape.
 
 Pairs:
 {pairs}
@@ -136,9 +137,31 @@ def realism(items, batch_size=10, passes=2, seed=0):
     return out
 
 
-def species(pairs, batch_size=8):
+def species(pairs, batch_size=8, recheck=2, seed=0):
     """pairs: [{'key', 'a' (render crop), 'b' (output crop), 'species' (None for open ground), 'flowers'}]
-    -> {key: {same, extra, confidence, note}}"""
+    -> {key: {same, extra, confidence, note, votes}}. A pair judged changed or extra is judged `recheck` more
+    times in shuffled batches, and same/extra are the majority of its votes."""
+    out = _species_pass(pairs, batch_size)
+    flagged = [p for p in pairs if p['key'] in out and (not out[p['key']]['same'] or out[p['key']]['extra'])]
+    if not flagged or not recheck:
+        return {k: dict(r, votes=1) for k, r in out.items()}
+    rng = random.Random(seed)
+    ballots = {p['key']: [out[p['key']]] for p in flagged}
+    for _ in range(recheck):
+        order = list(flagged)
+        rng.shuffle(order)
+        for k, r in _species_pass(order, batch_size).items():
+            ballots[k].append(r)
+    for k, rs in ballots.items():
+        conf = [r['confidence'] for r in rs if isinstance(r.get('confidence'), (int, float))]
+        out[k] = {'same': 2 * sum(r['same'] for r in rs) >= len(rs), 'extra': 2 * sum(r['extra'] for r in rs) > len(rs),
+                  'confidence': round(sum(conf) / len(conf)) if conf else None,
+                  'note': next((r['note'] for r in rs if r.get('note')), ''), 'votes': len(rs),
+                  'extra_votes': sum(r['extra'] for r in rs), 'same_votes': sum(r['same'] for r in rs)}
+    return {k: dict(r, votes=r.get('votes', 1)) for k, r in out.items()}
+
+
+def _species_pass(pairs, batch_size):
     out = {}
     for i in range(0, len(pairs), batch_size):
         batch = pairs[i:i + batch_size]
@@ -229,9 +252,13 @@ def pairwise(pairs, batch_size=6, passes=2, seed=0):
 
 
 BLOOM_PROMPT = """Each image below is a close crop of one plant in a garden picture, with the flowers that plant should
-show in full bloom. Open every file with the Read tool and decide whether the plant is shown in bloom: open flowers
-clearly visible on this plant (not buds only, not only foliage), and whether they match the description (colour,
-form, how they are carried). Judge the plant at the centre of the crop.
+show in full bloom. The plant being judged is shown at full brightness; everything around it is dimmed and is only
+context (ignore flowers on the dimmed neighbours). Open every file with the Read tool and answer for the bright plant:
+
+- in_bloom: open flowers clearly visible on it (not buds only, not only foliage).
+- matches: its flowers have the described colour family and flower type (for example trumpets, daisies, spikes,
+  globes, starry clusters). Allow for the scene's light and for small flowers seen from a distance. Do not fail it
+  for details beyond that (exact shade, ageing tints, the plant's leaves or growth habit); put those in the note.
 
 {items}
 

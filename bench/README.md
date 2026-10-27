@@ -49,8 +49,8 @@ set `PHOTOREAL_JUDGE_CLI` to use another judge, `PHOTOREAL_JUDGE_MODEL` to pin a
 | hardscape | render edges of walls, steps, paving (away from plants) vs output edges | mean distance ≤ 4 px |
 | plants | every plant ≥ 400 visible px: SAM mask of the output vs SAM mask of the render (box + 4 points from its own pixels). ≥ 2500 px: IoU ≥ 0.70, median shift ≤ 3% of its box diagonal, height (2–98th pct) within ±10%. Smaller: IoU ≥ 0.40. Plants SAM can't isolate in the render fall back to gradient alignment (shift ≤ 3%, correlation ≥ 0.12) | ≥ 97% of plants pass, none with IoU < 0.30 |
 | new plants | green vegetation on open ground (beds, terrain) away from plants, beyond the raw render | ≤ 0.2% of the image |
-| species | (judge) the 12 largest plants per view: render crop vs output crop, "same plant and species?" | no confident "different" |
-| bloom | (judge) the largest plant of each flowering species in `bloom.json`, per view: in bloom, flowers true to the description. Majority of 3 votes; a plant whose own pixels equal X0-final's keeps X0-final's verdict | ≥ 90% |
+| species | (judge) the 12 largest plants per view: render crop vs output crop, "same plant and species?" and "any plant, or flowers, not carried by a plant in the render?" (flowers growing from a render plant are not extra). A pair flagged either way is asked twice more; the majority stands | no confident "different" or "extra" |
+| bloom | (judge) the largest plant of each flowering species in `bloom.json`, per view, in a crop centred on its own pixels (object ID), zoomed to 768 px with everything else dimmed: open flowers visible, and their colour family and flower type match the description (finer detail - exact shade, ageing tints, leaves, habit - is noted, not failed). Majority of 3 votes; a plant whose own pixels equal X0-final's keeps X0-final's verdict | ≥ 90% |
 
 Controls: `X0-final` (shipped output), `X0-raw3d` (render over the photo, no finishing), `X0-broken`
 (plants moved, blobs painted, sky changed: must fail).

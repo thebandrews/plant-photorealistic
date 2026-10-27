@@ -33,7 +33,11 @@ BLOOM_PLANTS_PER_VIEW = 12      # largest plant of each flowering species, bigge
 BLOOM_MIN_PX = 2500
 BLOOM_PASS_SHARE = 0.9          # share of checked flowering plants judged in bloom and true to description
 BLOOM_VOTES = 3                 # bloom verdicts are a majority of this many judge votes
-BLOOM_SAME_TOL = 2              # a plant whose own pixels differ from the baseline's by at most this keeps its verdict
+BLOOM_CROP_MIN = 160            # a bloom crop spans at least this many source px around the plant
+BLOOM_CROP_PX = 768             # bloom crops are resized to this long side, so small plants are zoomed in
+BLOOM_DILATE = 6                # the plant's own pixels, grown by this many px, stay at full brightness
+BLOOM_DIM = 0.35                # the rest of a bloom crop is dimmed to this, to show which plant is judged
+BLOOM_SAME_TOL = 2             # a plant whose own pixels differ from the baseline's by at most this keeps its verdict
 SPECIES_FAIL_CONFIDENCE = 70
 PAIRWISE_REF = 'X0-final'      # side-by-side reference: the shipped output
 PAIRWISE_SANITY = 4             # pairs of a real-photo crop vs a shipped crop, to measure the judge
@@ -162,6 +166,29 @@ def _plant_crop(img, p):
     return part
 
 
+def _bloom_crop(img, view, p):
+    """Crop centred on the plant's own pixels (its object ID), zoomed so small plants fill it, with everything
+    else dimmed so the judge looks at this plant and not a neighbour in front of it."""
+    from PIL import Image, ImageFilter
+    m = view.ids == p['pass_index']
+    if not m.any():
+        return _plant_crop(img, p)
+    ys, xs = np.nonzero(m)
+    x0, x1 = np.percentile(xs, [1, 99])
+    y0, y1 = np.percentile(ys, [1, 99])
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    s = max(x1 - x0, y1 - y0, BLOOM_CROP_MIN) * 1.25
+    b = [int(max(0, cx - s / 2)), int(max(0, cy - s / 2)), int(min(img.shape[1], cx + s / 2)),
+         int(min(img.shape[0], cy + s / 2))]
+    keep = Image.fromarray(m[b[1]:b[3], b[0]:b[2]].astype(np.uint8) * 255)
+    keep = np.asarray(keep.filter(ImageFilter.MaxFilter(2 * BLOOM_DILATE + 1))) > 0
+    part = img[b[1]:b[3], b[0]:b[2]].astype(np.float32)
+    part[~keep] *= BLOOM_DIM
+    part = Image.fromarray(part.clip(0, 255).astype(np.uint8))
+    k = BLOOM_CROP_PX / max(part.size)
+    return np.asarray(part.resize((max(1, round(part.width * k)), max(1, round(part.height * k))), Image.LANCZOS))
+
+
 def _species_pairs(bench, view, out):
     """The largest plants (named species and expected flowers) plus the fixed ground crops (invented plants)."""
     ref = view.naive_composite()
@@ -182,7 +209,7 @@ def _bloom_items(bench, view, out):
         if p['species'] in expected and p['species'] not in seen and p['pixels'] >= BLOOM_MIN_PX:
             seen.add(p['species'])
             items.append({'key': f"{view.id}:{p['id']}", 'species': p['species'], 'flowers': expected[p['species']],
-                          'image': _plant_crop(out, p)})
+                          'image': _bloom_crop(out, view, p)})
     return items[:BLOOM_PLANTS_PER_VIEW]
 
 
