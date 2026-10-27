@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 
 from appearance_plan import expand
+import bed_ground
 from botanical_refinement import images
 from handoff import checked, read, record, require
 from photo_composite import PHOTO_CHECKS, LANDSCAPE_KINDS, context as photo_context, resolve_surface_overlap, landscape_kind, verify_roles
@@ -194,10 +195,14 @@ def context(plan, base):
     nonplants = mask & ~plants
     eligible = (ground | (expand(nonplants, 12) & ~mask)) & ~expand(plants, 3) & ~occluded
     require(not np.any((transition > 0) & ~eligible), 'Transition edit reaches protected plant/background regions')
-    return hp, view, plate, foreground, alpha, cleanup, transition, result
+    bed_on = bed_ground.check_spec(plan.get('bed_ground'), base)
+    layers = {'ids': ids, 'depth': depth, 'plants': plants, 'occluded': occluded, 'bed_on': bed_on,
+              'bed': np.isin(ids, [o['pass_index'] for o in objects if landscape_kind(o) == 'bed']),
+              'manifest': read(checked(view['renderer_manifest'], hp.parent)) if view.get('renderer_manifest') else None}
+    return hp, view, plate, foreground, alpha, cleanup, transition, result, layers
 
 
-def prepare(photo_plan, stage, matte, cleanup_inventory, transition_alpha, out):
+def prepare(photo_plan, stage, matte, cleanup_inventory, transition_alpha, out, bed=True, soil_image=None, soil_box=None):
     inventory_path = Path(cleanup_inventory).resolve(); inventory = read(inventory_path)
     regions = inventory['regions']
     for region in regions:
@@ -206,6 +211,7 @@ def prepare(photo_plan, stage, matte, cleanup_inventory, transition_alpha, out):
             'landscape_review': record(stage), 'renderer_matte': record(matte),
             'cleanup_regions': regions, 'cleanup_inventory': record(inventory_path), 'transition_alpha': record(transition_alpha),
             'surface_realism_review': True,
+            'bed_ground': bed_ground.plan_spec(bed, soil_image, soil_box),
             'operation': 'cleanup_then_straight_srgb_linear_overlay_then_bounded_ground_blend_v1'}
     context(plan, Path.cwd())
     out = Path(out).resolve(); require(not out.exists(), 'Use a new pre-generation finishing plan')
@@ -222,13 +228,18 @@ def cleaned_plate(plate, cleanup, cleanup_raw, base):
 
 
 def reconstruct(plan, base, cleanup_raw=None, transition_raw=None, *, preview=False):
-    ctx = context(plan, base); _, _, plate, fg, alpha, cleanup, transition, _ = ctx
+    ctx = context(plan, base); _, _, plate, fg, alpha, cleanup, transition, _, layers = ctx
     plate = cleaned_plate(plate, cleanup, cleanup_raw, base)
     final = blend(fg, plate, alpha)
     if np.any(transition) and not preview:
         require(transition_raw is not None, 'Raw transition edit required')
         raw, _ = load(checked(transition_raw, base)); require(raw.shape == final.shape, 'Raw transition canvas differs')
         final = blend(scaled_like(raw, final), final, transition)
+    if layers['bed_on'] and not preview:
+        # Open bed ground the other permissions don't own: opaque landscape, no cleanup/transition/occlusion.
+        area = layers['bed'] & (alpha == 255) & ~cleanup & (transition == 0) & ~layers['occluded']
+        final, layers['bed_ground_info'] = bed_ground.apply(final, layers['ids'], layers['depth'], layers['plants'],
+                                                            area, layers['manifest'], plan['bed_ground'], base)
     return final, ctx
 
 
@@ -248,6 +259,7 @@ def compose(plan_path, out, cleanup_raw=None, transition_raw=None):
     for key, path in [('cleanup_raw', cleanup_raw), ('transition_raw', transition_raw)]:
         if path: proof[key] = record(path)
     final, ctx = reconstruct(plan, pp.parent, proof.get('cleanup_raw'), proof.get('transition_raw'))
+    if 'bed_ground_info' in ctx[8]: proof['bed_ground'] = ctx[8]['bed_ground_info']
     out = Path(out).resolve(); require(not out.exists(), 'Use a new final directory'); out.mkdir(parents=True)
     save(out / 'candidate.png', final); proof['candidate'] = record(out / 'candidate.png')
     save(out / 'cleaned-photo.png', cleaned_plate(ctx[2], ctx[5], proof.get('cleanup_raw'), pp.parent))
@@ -265,6 +277,7 @@ def verify(proof, base):
     expected, ctx = reconstruct(plan, pp.parent, cleanup_raw, transition_raw)
     final, alpha = load(checked(proof['candidate'], base))
     require(alpha is None and final.dtype == np.uint16 and np.array_equal(final, expected), 'Final photo finishing reconstruction differs')
+    require(proof.get('bed_ground') == ctx[8].get('bed_ground_info'), 'Bed ground record differs from its reconstruction')
     cleaned, cleaned_alpha = load(checked(proof['cleaned_photo'], base))
     require(cleaned_alpha is None and np.array_equal(cleaned, cleaned_plate(ctx[2], ctx[5], cleanup_raw, pp.parent)),
             'Cleaned photo reconstruction differs')
@@ -273,7 +286,7 @@ def verify(proof, base):
 
 def check_review(data, base):
     fp = checked(data['finish_proof'], base); proof = read(fp)
-    plan, ctx = verify(proof, fp.parent); hp, view, _, _, alpha, cleanup, transition, stage = ctx
+    plan, ctx = verify(proof, fp.parent); hp, view, _, _, alpha, cleanup, transition, stage, layers = ctx
     require(checked(data['handoff'], base) == hp and data['camera_id'] == view['camera_id'] and
             checked(data['candidate'], base) == checked(proof['candidate'], fp.parent), 'Final review camera/candidate differs')
     vision = data.get('photo_review', {})
@@ -304,6 +317,7 @@ def check_review(data, base):
     return {'status': 'completed_with_limitations' if nonpassing else 'accepted', 'nonpassing_checks': nonpassing, 'limitations': data.get('limitations', []), 'camera_id': view['camera_id'], 'method': 'photo_finish', 'photo_background_composited': True,
             'cleanup_regions': len(rows), 'unresolved_cleanup_targets': [r['id'] for r in rows if r.get('status') != 'removed'], 'cleanup_pixels': int(cleanup.sum()), 'transition_pixels': int((transition > 0).sum()),
             'photo_background_pixels_preserved': int(((alpha == 0) & ~cleanup & (transition == 0)).sum()),
+            'bed_ground': layers.get('bed_ground_info', {'status': 'off'}),
             'landscape_evidence_counts': stage['evidence_counts'], 'scope': 'Cleaned original photo with checked landscape and reviewed integration',
             'upstream_handoff_kind': read(hp)['kind'], 'upstream_certification': read(hp).get('certification', 'inherited_strict_validation'), 'upstream_production_status': read(hp).get('production_status'), 'inherited_assumptions': read(hp).get('assumptions', []),
             'limitation': 'Native evidence and reproducible operations do not independently establish semantic realism; finishing never upgrades upstream source/camera certification'}
@@ -314,11 +328,15 @@ if __name__ == '__main__':
     a = sub.add_parser('plan'); a.add_argument('--photo-plan', required=True); a.add_argument('--landscape-review', required=True)
     a.add_argument('--renderer-matte', required=True); a.add_argument('--cleanup-inventory', required=True)
     a.add_argument('--transition-alpha', required=True); a.add_argument('--out', required=True)
+    a.add_argument('--no-bed-ground', action='store_true', help='Leave open bed ground as rendered (no mulch grain)')
+    a.add_argument('--soil-reference', help='Site photo showing bare bed soil; its colour guides the mulch')
+    a.add_argument('--soil-box', type=int, nargs=4, metavar=('X0', 'Y0', 'X1', 'Y1'), help='Bare-soil box in that photo')
     a = sub.add_parser('preview'); a.add_argument('plan'); a.add_argument('--out', required=True); a.add_argument('--cleanup-raw')
     a = sub.add_parser('compose'); a.add_argument('plan'); a.add_argument('--out', required=True)
     a.add_argument('--cleanup-raw'); a.add_argument('--transition-raw'); a = p.parse_args()
     if a.command == 'plan':
-        result = prepare(a.photo_plan, a.landscape_review, a.renderer_matte, a.cleanup_inventory, a.transition_alpha, a.out)
+        result = prepare(a.photo_plan, a.landscape_review, a.renderer_matte, a.cleanup_inventory, a.transition_alpha, a.out,
+                         not a.no_bed_ground, a.soil_reference, a.soil_box)
     elif a.command == 'preview':
         result = preview(a.plan, a.out, a.cleanup_raw)
     else:

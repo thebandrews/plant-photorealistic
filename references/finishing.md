@@ -73,7 +73,19 @@ This preview skips the transition edit and cannot claim acceptance. Edit `overla
 python scripts/photo_finish.py compose FINISH_PLAN.json --cleanup-raw CLEANUP_RAW.png --transition-raw TRANSITION_RAW.png --out FINAL_DIR
 ```
 
-Omit a raw argument only when its corresponding permission mask is empty. Inputs must match dimensions; never crop/warp/resize a generation to force acceptance. The proof reconstructs cleanup, linear-alpha overlay and bounded transition blending exactly. Retain raw results and proof even when a local edit is rejected. Correct abrupt physical geometry mismatches in the scene, not by smearing pixels.
+Omit a raw argument only when its corresponding permission mask is empty.
+
+### Bed ground (on by default)
+
+Renderer bed soil reads as flat brown paint, which the lab's vision judge flagged as the main giveaway once plants bloom. New plans therefore freeze a `bed_ground` entry (`operation: bed_ground_mulch_v1`, the packaged hashed exemplars in `assets/bed-ground/`), and compose applies it last, after the transition blend:
+
+- It changes only open bed ground: near-horizontal `bed` renderer surfaces under fully opaque landscape alpha, outside cleanup, transition and context-occlusion permissions, more than 8 px from every plant pixel. Plants, their 8 px ring, raised-bed sides, paving, walls and the photo keep their exact samples; the helper asserts it.
+- It keeps the composite's own tone, light, shadows and soil colour and adds zero-mean fine bark-mulch grain mapped in world space through the handoff view's `renderer_manifest` camera and the matte depth, so the shreds are true size at every distance. Grain fades in from the plant ring and bed borders, crushed render shade gets a soft lift, and the render's small leaf decals on open soil are inpainted.
+- `--soil-reference PHOTO --soil-box X0 Y0 X1 Y1` points at bare bed soil in a site photo; its colour then pulls the soil 30% toward it. Without it the render's soil colour stays.
+- `--no-bed-ground` turns it off for the plan (for example gravel, groundcover or bare-soil designs, which this mulch would misrepresent). The pass also skips itself, with the reason in the proof, when there is no open bed ground or the handoff view has no `renderer_manifest`.
+- `finish-proof.json` records the outcome under `bed_ground` (status, open-ground and changed pixel counts, depth convention, footprint, guard results); verification recomputes it. The preview skips it, like the transition edit, so transition generations see the unmulched ground; transition pixels are never mulched.
+
+Review the mulch in the final crops like any surface: shred scale at near and far distance, no visible repeat, seams at bed borders, and the smooth ring that remains round each plant. Inputs must match dimensions; never crop/warp/resize a generation to force acceptance. The proof reconstructs cleanup, linear-alpha overlay and bounded transition blending exactly. Retain raw results and proof even when a local edit is rejected. Correct abrupt physical geometry mismatches in the scene, not by smearing pixels.
 
 Use [native regional edits and bounded parallel work](efficient-execution.md) when full-frame dimensions are unsupported or independent views can overlap. Crop the source **before** generation with a frozen plan; the resulting generation must match that crop exactly. This differs from resizing/cropping an incorrectly sized result afterward.
 
