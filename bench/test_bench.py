@@ -155,3 +155,24 @@ def test_bloom_items_and_qualification(tiny, monkeypatch):
     judged['bloom']['v1:P-2'].update(in_bloom=True, matches=True)
     bl.write_json(d / 'judge.json', judged)
     assert bb.summarize(d)['qualified'] is True
+
+
+def test_invented_plants_disqualify(tiny, monkeypatch):
+    monkeypatch.setenv('PHOTOREAL_EXPERIMENTS', str(tiny.root.parent / 'exps'))
+    d = bb.new_experiment(tiny, 'E4', 'D', 'h', 'm')
+    bl.write_json(d / 'gates.json', {'pass': True, 'views': {}})
+    bl.write_json(d / 'judge.json', {'realism': {}, 'species': {
+        'v1:P-1': {'same': True, 'extra': True, 'confidence': 85},
+        'v1:P-2': {'same': True, 'extra': True, 'confidence': 40}}})
+    s = bb.summarize(d)
+    assert s['species']['extra_plants'] == ['v1:P-1'] and s['species']['different'] == [] and s['qualified'] is False
+
+
+def test_species_pairs_name_species_flowers_and_ground(tiny):
+    bl.write_json(tiny.root / 'bloom.json', {'bloom': {'Salvia nemorosa': 'rose-magenta spikes'}})
+    bl.write_json(tiny.root / 'crops.json', {'views': {'v1': [{'id': 'v1-ground-09', 'kind': 'ground', 'box': [10, 100, 74, 164]}]}})
+    v = tiny.view('v1')
+    pairs = bb._species_pairs(tiny, v, v.baseline_final)
+    by = {p['key']: p for p in pairs}
+    assert by['v1:P-2']['flowers'] == 'rose-magenta spikes' and by['v1:P-1']['flowers'] is None
+    assert by['v1:v1-ground-09']['species'] is None

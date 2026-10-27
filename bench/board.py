@@ -107,7 +107,7 @@ figcaption { font-size:.72rem; color:var(--muted); white-space:nowrap; overflow:
     const gates = [];
     Object.entries(e.gates || {}).forEach(([v, g]) => Object.entries(g).forEach(([name, ok]) => gates.push(el('span', { class: 'chip' + (ok ? '' : ' no'), text: v + ' ' + name }))));
     if (e.bloom) gates.push(el('span', { class: 'chip' + (e.bloom.pass ? '' : ' no'), text: 'in bloom ' + e.bloom.in_bloom + '/' + e.bloom.checked }));
-    if (e.species) gates.push(el('span', { class: 'chip' + (e.species.pass ? '' : ' no'), text: 'species ' + (e.species.pairs - e.species.different.length) + '/' + e.species.pairs }));
+    if (e.species) gates.push(el('span', { class: 'chip' + (e.species.pass ? '' : ' no'), text: 'species ' + (e.species.pairs - e.species.different.length) + '/' + e.species.pairs + ((e.species.extra_plants || []).length ? ' · ' + e.species.extra_plants.length + ' invented' : '') }));
     const gw = Object.entries(e.giveaways || {}).slice(0, 4).map(([k, n]) => el('span', { class: 'chip gw', text: k.replace(/_/g, ' ') + ' ' + n }));
     const meta = el('div', { class: 'meta' },
       el('div', { class: 'rank', text: q ? '#' + rank : 'DQ' }), el('div', { class: 'id', text: e.id }),

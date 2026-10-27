@@ -160,10 +160,16 @@ def _plant_crop(img, p):
     return part
 
 
-def _species_pairs(view, out):
+def _species_pairs(bench, view, out):
+    """The largest plants (named species and expected flowers) plus the fixed ground crops (invented plants)."""
     ref = view.naive_composite()
-    return [{'key': f"{view.id}:{p['id']}", 'species': p['species'], 'a': _plant_crop(ref, p), 'b': _plant_crop(out, p)}
-            for p in view.plants[:SPECIES_PAIRS_PER_VIEW]]
+    flowers = (bench.bloom or {}).get('bloom', {})
+    pairs = [{'key': f"{view.id}:{p['id']}", 'species': p['species'], 'flowers': flowers.get(p['species']),
+              'a': _plant_crop(ref, p), 'b': _plant_crop(out, p)} for p in view.plants[:SPECIES_PAIRS_PER_VIEW]]
+    for c in (bench.crops or {}).get('views', {}).get(view.id, []):
+        if c['kind'] == 'ground':
+            pairs.append({'key': f"{view.id}:{c['id']}", 'species': None, 'a': cr.cut(ref, c), 'b': cr.cut(out, c)})
+    return pairs
 
 
 def _bloom_items(bench, view, out):
@@ -208,7 +214,7 @@ def cmd_judge(bench, args, exp_id=None):
     pairs = []
     if not args.no_species:
         for v in bench.views:
-            pairs += _species_pairs(v, load_out(bench, d, v))
+            pairs += _species_pairs(bench, v, load_out(bench, d, v))
     spec = jd.species(pairs) if pairs else {}
     blooms = [it for v in bench.views for it in _bloom_items(bench, v, load_out(bench, d, v))] if bench.bloom else []
     bloom = jd.bloom(blooms) if blooms else {}
@@ -278,8 +284,10 @@ def summarize(d):
                 counts[g.get('type', 'other')] = counts.get(g.get('type', 'other'), 0) + 1
         s['giveaways'] = dict(sorted(counts.items(), key=lambda kv: -kv[1]))
         sp = judged.get('species', {})
-        bad = [k for k, x in sp.items() if not x['same'] and (x.get('confidence') or 0) >= SPECIES_FAIL_CONFIDENCE]
-        s['species'] = {'pairs': len(sp), 'different': bad, 'pass': not bad}
+        sure = {k: x for k, x in sp.items() if (x.get('confidence') or 0) >= SPECIES_FAIL_CONFIDENCE}
+        bad = [k for k, x in sure.items() if not x['same']]
+        extra = [k for k, x in sure.items() if x.get('extra')]
+        s['species'] = {'pairs': len(sp), 'different': bad, 'extra_plants': extra, 'pass': not bad and not extra}
         bl_ = judged.get('bloom') or {}
         if bl_:
             ok = [k for k, x in bl_.items() if x['in_bloom'] and x['matches']]

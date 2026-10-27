@@ -40,18 +40,23 @@ Reply with JSON only, no prose, as a list with one entry per file:
    "giveaways": [{{"type": one of {types}, "where": "<region>", "note": "<short>"}}]}}]
 Give an empty giveaways list when you find none."""
 
-SPECIES_PROMPT = """Each pair below shows the same location in two images of a planted garden: A is a 3D render
-used as the design, B is a finished image. The design may have been made more realistic in B, which can change
-leaf detail, texture and lighting, and a flowering plant may be shown in bloom in B (flowers that belong to the
-same plant are not a change). Decide for each pair whether B still shows the same plant at that spot:
-the same species or cultivar (leaf shape and arrangement, growth habit, flower colour and form) and roughly the
-same size and position. A different plant, a missing plant, an extra plant or a changed species means "same": false.
-Open both files of every pair with the Read tool.
+SPECIES_PROMPT = """Each pair below shows the same spot in two images of a planted garden: A is a 3D render used as
+the design, B is the finished image. For each pair you are told what is at the centre: a plant's species and, if it
+flowers, the flowers it should show in bloom; or open ground. B may make plants look more realistic and more like
+the named species (leaf detail, anatomy, texture, light) and may show the listed flowers on that plant. Neither is a
+change. Open both files of every pair with the Read tool and answer two questions:
+
+- same: does B still show the centre plant at the same spot, as the named species, at roughly the same size? false
+  if it is missing, moved, or has become a different plant (another growth form, leaf type, or flower colour/form
+  than listed). For open ground, same is true unless the ground became something else (paving, a plant).
+- extra: does B contain, anywhere in the crop, a plant that A does not have, or flowers that are not carried by a
+  plant that is in A?
 
 Pairs:
 {pairs}
 
-Reply with JSON only: [{{"pair": <n>, "same": true or false, "confidence": <0-100>, "note": "<short>"}}]"""
+Reply with JSON only: [{{"pair": <n>, "same": true or false, "extra": true or false, "confidence": <0-100>,
+  "note": "<short>"}}]"""
 
 
 def _cli():
@@ -132,7 +137,8 @@ def realism(items, batch_size=10, passes=2, seed=0):
 
 
 def species(pairs, batch_size=8):
-    """pairs: [{'key', 'a' (render crop), 'b' (output crop)}] -> {key: {same, confidence, note}}"""
+    """pairs: [{'key', 'a' (render crop), 'b' (output crop), 'species' (None for open ground), 'flowers'}]
+    -> {key: {same, extra, confidence, note}}"""
     out = {}
     for i in range(0, len(pairs), batch_size):
         batch = pairs[i:i + batch_size]
@@ -142,13 +148,15 @@ def species(pairs, batch_size=8):
             for n, pr in enumerate(batch, 1):
                 Image.fromarray(pr['a']).save(folder / f'pair{n}-A.png')
                 Image.fromarray(pr['b']).save(folder / f'pair{n}-B.png')
-                lines.append(f'{n}. pair{n}-A.png and pair{n}-B.png')
+                centre = (f"{pr['species']}" + (f"; in bloom: {pr['flowers']}" if pr.get('flowers') else '; no flowers expected')
+                          if pr.get('species') else 'open ground, no plant')
+                lines.append(f'{n}. pair{n}-A.png and pair{n}-B.png. Centre: {centre}')
             reply = _parse_list(ask(SPECIES_PROMPT.format(pairs='\n'.join(lines)), folder))
             for r in reply:
                 n = int(r.get('pair', 0))
                 if 1 <= n <= len(batch):
-                    out[batch[n - 1]['key']] = {'same': bool(r.get('same')), 'confidence': r.get('confidence'),
-                                                'note': r.get('note', '')}
+                    out[batch[n - 1]['key']] = {'same': bool(r.get('same')), 'extra': bool(r.get('extra')),
+                                                'confidence': r.get('confidence'), 'note': r.get('note', '')}
         finally:
             shutil.rmtree(folder, ignore_errors=True)
     return out

@@ -154,6 +154,8 @@ def run_one(queue_file):
     result = {'id': eid, 'spec': spec, 'started': now()}
     logs = LAB / 'logs' / eid
     logs.mkdir(parents=True, exist_ok=True)
+    if spec.get('rescore'):
+        return rescore(spec, running, logs)
     try:
         if lab_gpu_used() >= LAB_GPU_SECONDS:
             raise RuntimeError(f'lab GPU budget spent ({lab_gpu_used():.0f}s of {LAB_GPU_SECONDS:.0f}s)')
@@ -200,6 +202,25 @@ def run_one(queue_file):
     result['finished'] = now()
     result['lab_gpu_seconds'] = lab_gpu_used()
     write_json(LAB / 'done' / f'{eid}.json', result)
+    running.unlink(missing_ok=True)
+    return result
+
+
+def rescore(spec, running, logs):
+    """{"id": ..., "rescore": true}: score an existing experiment again with the current bench, no agent."""
+    eid = spec['id']
+    done = LAB / 'done' / f'{eid}.json'
+    result = json.loads(done.read_text(encoding='utf-8')) if done.exists() else {'id': eid}
+    exp_dir = EXPERIMENTS / eid
+    env = agent_env(spec, exp_dir)
+    with score_lock:
+        r = bench_py('score', eid, env=env)
+        (logs / 'rescore.log').write_text(r.stdout + r.stderr, encoding='utf-8')
+        bench_py('board', env=env)
+    sp = exp_dir / 'scores.json'
+    result['score'] = json.loads(sp.read_text()) if sp.exists() else {'error': r.stderr[-1000:]}
+    result['rescored'] = now()
+    write_json(done, result)
     running.unlink(missing_ok=True)
     return result
 
