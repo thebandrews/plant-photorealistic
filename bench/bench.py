@@ -32,6 +32,8 @@ SPECIES_PAIRS_PER_VIEW = 12
 BLOOM_PLANTS_PER_VIEW = 12      # largest plant of each flowering species, biggest first
 BLOOM_MIN_PX = 2500
 BLOOM_PASS_SHARE = 0.9          # share of checked flowering plants judged in bloom and true to description
+BLOOM_VOTES = 3                 # bloom verdicts are a majority of this many judge votes
+BLOOM_SAME_TOL = 2              # a plant whose own pixels differ from the baseline's by at most this keeps its verdict
 SPECIES_FAIL_CONFIDENCE = 70
 PAIRWISE_REF = 'X0-final'      # side-by-side reference: the shipped output
 PAIRWISE_SANITY = 4             # pairs of a real-photo crop vs a shipped crop, to measure the judge
@@ -184,6 +186,36 @@ def _bloom_items(bench, view, out):
     return items[:BLOOM_PLANTS_PER_VIEW]
 
 
+def _plant_unchanged(view, key, out, ref):
+    """True when every pixel of the plant (its own object ID) is within BLOOM_SAME_TOL of the reference."""
+    p = next(p for p in view.plants if f"{view.id}:{p['id']}" == key)
+    m = view.ids == p['pass_index']
+    return bool(m.any()) and int(np.abs(out[m].astype(int) - ref[m].astype(int)).max()) <= BLOOM_SAME_TOL
+
+
+def judge_bloom(bench, d, jd):
+    """Bloom verdicts: a plant left exactly as in the baseline keeps the baseline's (majority-vote) verdict; the
+    others get a majority of BLOOM_VOTES judge votes. The bloom judge is noisy on the same pixels, so an
+    experiment that didn't touch a plant must not gain or lose its bloom by chance."""
+    ref_dir = exp_root(bench) / PAIRWISE_REF
+    ref_bloom = {}
+    if d.name != PAIRWISE_REF and (ref_dir / 'judge.json').exists():
+        ref_bloom = {k: x for k, x in (bl.read_json(ref_dir / 'judge.json').get('bloom') or {}).items()
+                     if x.get('votes', 1) >= BLOOM_VOTES}
+    out, ask = {}, []
+    for v in bench.views:
+        img = load_out(bench, d, v)
+        ref = load_out(bench, ref_dir, v) if ref_bloom else None
+        for it in _bloom_items(bench, v, img):
+            if it['key'] in ref_bloom and _plant_unchanged(v, it['key'], img, ref):
+                out[it['key']] = dict(ref_bloom[it['key']], inherited_from=PAIRWISE_REF)
+            else:
+                ask.append(it)
+    judged = jd.bloom(ask, votes=BLOOM_VOTES) if ask else {}
+    out.update({k: dict(r, species=next(i['species'] for i in ask if i['key'] == k)) for k, r in judged.items()})
+    return out
+
+
 def cmd_judge(bench, args, exp_id=None):
     import judge as jd
     d = exp_dir(bench, exp_id or args.id)
@@ -216,11 +248,10 @@ def cmd_judge(bench, args, exp_id=None):
         for v in bench.views:
             pairs += _species_pairs(bench, v, load_out(bench, d, v))
     spec = jd.species(pairs) if pairs else {}
-    blooms = [it for v in bench.views for it in _bloom_items(bench, v, load_out(bench, d, v))] if bench.bloom else []
-    bloom = jd.bloom(blooms) if blooms else {}
+    bloom = judge_bloom(bench, d, jd) if bench.bloom else {}
     judged = {'realism': {k: dict(r, kind=meta[k]['kind'], weight=meta[k].get('weight', 0)) for k, r in real.items()},
               'species': {k: dict(r, species=next(p['species'] for p in pairs if p['key'] == k)) for k, r in spec.items()},
-              'bloom': {k: dict(r, species=next(i['species'] for i in blooms if i['key'] == k)) for k, r in bloom.items()},
+              'bloom': bloom,
               'judge_cli': ' '.join(jd._cli()), 'passes': args.passes}
     bl.write_json(d / 'judge.json', judged)
     return judged

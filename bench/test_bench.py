@@ -176,3 +176,43 @@ def test_species_pairs_name_species_flowers_and_ground(tiny):
     by = {p['key']: p for p in pairs}
     assert by['v1:P-2']['flowers'] == 'rose-magenta spikes' and by['v1:P-1']['flowers'] is None
     assert by['v1:v1-ground-09']['species'] is None
+
+
+def test_bloom_verdict_is_a_majority_of_votes(monkeypatch):
+    import judge as jd
+    seq = iter([True, False, True, False, False, True])
+    monkeypatch.setattr(jd, '_bloom_pass', lambda items, batch_size: {
+        it['key']: {'in_bloom': next(seq), 'matches': True, 'confidence': 80, 'note': ''} for it in items})
+    items = [{'key': 'a', 'image': None, 'flowers': 'x'}, {'key': 'b', 'image': None, 'flowers': 'y'}]
+    out = jd.bloom(items, votes=3)
+    assert sorted(out) == ['a', 'b'] and all(x['votes'] == 3 and x['matches'] for x in out.values())
+    assert sum(x['in_bloom_votes'] for x in out.values()) == 3
+    assert all(x['in_bloom'] == (x['in_bloom_votes'] >= 2) for x in out.values())
+
+
+def test_unchanged_plants_keep_the_baseline_bloom_verdict(tiny, monkeypatch):
+    bl.write_json(tiny.root / 'bloom.json', {'bloom': {'Salvia nemorosa': 'rose-magenta spikes'}})
+    monkeypatch.setenv('PHOTOREAL_EXPERIMENTS', str(tiny.root.parent / 'exps'))
+    v = tiny.view('v1')
+    base = bb.new_experiment(tiny, 'X0-final', 'X', 'h', 'm')
+    (base / 'out').mkdir(exist_ok=True)
+    Image.fromarray(v.baseline_final).save(base / 'out' / 'v1.png')
+    bl.write_json(base / 'judge.json', {'bloom': {'v1:P-2': {'in_bloom': True, 'matches': True, 'votes': 3,
+                                                             'species': 'Salvia nemorosa'}}})
+    d = bb.new_experiment(tiny, 'E9', 'H', 'h', 'm')
+    (d / 'out').mkdir(exist_ok=True)
+    img = v.baseline_final.copy()
+    img[v.ids == 10] = (90, 60, 40)                     # ground changed, plant 2 untouched
+    Image.fromarray(img).save(d / 'out' / 'v1.png')
+
+    class NoJudge:
+        @staticmethod
+        def bloom(items, votes=1):
+            return {it['key']: {'in_bloom': False, 'matches': False, 'votes': votes} for it in items}
+    out = bb.judge_bloom(tiny, d, NoJudge)
+    assert out['v1:P-2']['in_bloom'] is True and out['v1:P-2']['inherited_from'] == 'X0-final'
+    img[v.ids == 2] = (200, 60, 150)                    # plant 2 repainted: judged afresh
+    Image.fromarray(img).save(d / 'out' / 'v1.png')
+    out = bb.judge_bloom(tiny, d, NoJudge)
+    assert out['v1:P-2']['in_bloom'] is False and 'inherited_from' not in out['v1:P-2']
+    assert out['v1:P-2']['species'] == 'Salvia nemorosa'

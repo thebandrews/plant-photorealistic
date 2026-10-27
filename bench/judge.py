@@ -239,8 +239,29 @@ Reply with JSON only: [{{"file": "<name>", "in_bloom": true or false, "matches":
   "confidence": <0-100>, "note": "<short>"}}]"""
 
 
-def bloom(items, batch_size=8):
-    """items: [{'key', 'image', 'flowers' (expected description)}] -> {key: {in_bloom, matches, confidence, note}}"""
+def bloom(items, batch_size=8, votes=1, seed=0):
+    """items: [{'key', 'image', 'flowers' (expected description)}] -> {key: {in_bloom, matches, confidence, note,
+    votes}}. With votes > 1 each plant is judged that many times in shuffled batches; in_bloom and matches are the
+    majority of the votes received."""
+    rng = random.Random(seed)
+    ballots = {}
+    for _ in range(votes):
+        order = list(items)
+        rng.shuffle(order)
+        for k, r in _bloom_pass(order, batch_size).items():
+            ballots.setdefault(k, []).append(r)
+    out = {}
+    for k, rs in ballots.items():
+        conf = [r['confidence'] for r in rs if isinstance(r.get('confidence'), (int, float))]
+        out[k] = {'in_bloom': 2 * sum(r['in_bloom'] for r in rs) > len(rs),
+                  'matches': 2 * sum(r['matches'] for r in rs) > len(rs),
+                  'confidence': round(sum(conf) / len(conf)) if conf else None,
+                  'note': next((r['note'] for r in rs if r.get('note')), ''),
+                  'votes': len(rs), 'in_bloom_votes': sum(r['in_bloom'] for r in rs)}
+    return out
+
+
+def _bloom_pass(items, batch_size):
     out = {}
     for i in range(0, len(items), batch_size):
         batch = items[i:i + batch_size]
