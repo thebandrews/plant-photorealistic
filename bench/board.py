@@ -49,7 +49,8 @@ def build(bench, root, rows):
                 _web(cr.cut(out, c), board / r2, 640)
                 imgs[v.id]['crops'].append({'src': r2, 'kind': c['kind'], 'label': (c.get('focus') or {}).get('species', c['kind'])})
         entries.append(dict(s, images=imgs))
-    entries.sort(key=lambda e: (e.get('qualified') is not True, -(e.get('win_vs_shipped') or 0), -(e.get('realism') or -1)))
+    entries.sort(key=lambda e: (e.get('qualified') is not True, -(e.get('impression_share') or 0),
+                                -(e.get('impression_mean') or 0), -(e.get('win_vs_shipped') or 0)))
     data = json.dumps({'bench': bench.name, 'views': [v.id for v in bench.views], 'entries': entries})
     page = TEMPLATE.replace('__DATA__', data.replace('</', '<\\/')).replace('__BENCH__', html.escape(bench.name))
     (board / 'index.html').write_text(page, encoding='utf-8')
@@ -93,7 +94,7 @@ figcaption { font-size:.72rem; color:var(--muted); white-space:nowrap; overflow:
 @media (max-width:900px) { .exp { grid-template-columns:minmax(0,1fr); } .meta { border-right:0; border-bottom:1px solid var(--rule); } .view { grid-template-columns:repeat(2,minmax(0,1fr)); } .view figure:first-child { grid-column:1 / -1; } }
 </style>
 <div class="wrap">
-  <header><h1>Photoreal Lab Board</h1><p class="sub">Bench __BENCH__. Qualified runs (every gate passed) ranked by how often the judge picks them over the shipped output side by side (50% = no better), then by realism; disqualified runs below. Realism = weighted mean of the judge's photo probability over fixed crops.</p></header>
+  <header><h1>Photoreal Lab Board</h1><p class="sub">Bench __BENCH__. Qualified runs (every gate passed) ranked by the goal metric: the share of fixed crops that give a realistic impression (score 3+ of 5: real living plants, small AI or CG traces allowed; goal 80% with no plastic-toy crops), then by mean impression score; disqualified runs below. Realism = the stricter forensic judge's photo probability, kept for reference.</p></header>
   <main id="list"></main>
 </div>
 <script id="data" type="application/json">__DATA__</script>
@@ -114,7 +115,9 @@ figcaption { font-size:.72rem; color:var(--muted); white-space:nowrap; overflow:
       el('div', { class: 'hyp', text: (e.hypothesis || '') + (e.method ? ' · ' + e.method : '') }),
       el('div', { class: 'score' },
         el('div', {}, el('b', { text: e.win_vs_shipped != null ? Math.round(e.win_vs_shipped * 100) + '%' : '–' }), el('span', { text: 'beats shipped' })),
-        el('div', {}, el('b', { text: e.realism != null ? e.realism : '–' }), el('span', { text: 'realism' })),
+        el('div', {}, el('b', { text: e.impression_share != null ? Math.round(e.impression_share * 100) + '%' : '–' }), el('span', { text: 'realistic impression' })),
+        el('div', {}, el('b', { text: e.impression_mean != null ? e.impression_mean : '–' }), el('span', { text: 'impression /5' })),
+        el('div', {}, el('b', { text: e.realism != null ? e.realism : '–' }), el('span', { text: 'forensic realism' })),
         el('div', {}, el('b', { text: e.photo_share != null ? Math.round(e.photo_share * 100) + '%' : '–' }), el('span', { text: 'crops judged photo' })),
         el('div', {}, el('b', { text: e.gpu_seconds != null ? e.gpu_seconds : '–' }), el('span', { text: 'GPU-s' })),
         el('div', {}, el('b', { text: e.judge_anchor_accuracy != null ? Math.round(e.judge_anchor_accuracy * 100) + '%' : '–' }), el('span', { text: 'judge on anchors' }))),

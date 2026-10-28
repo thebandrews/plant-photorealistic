@@ -243,3 +243,23 @@ def test_flagged_species_pairs_are_rechecked_by_majority(monkeypatch):
     assert calls[1:] == [['a'], ['a']]                                  # only the flagged pair is asked again
     assert out['a']['extra'] is False and out['a']['votes'] == 3 and out['a']['extra_votes'] == 1
     assert out['b']['votes'] == 1 and out['b']['extra'] is False
+
+
+def test_goal_needs_realistic_share_and_no_toys(tiny, monkeypatch):
+    monkeypatch.setenv('PHOTOREAL_EXPERIMENTS', str(tiny.root.parent / 'exps'))
+    d = bb.new_experiment(tiny, 'E1', 'A', 'h', 'm')
+    bl.write_json(d / 'gates.json', {'pass': True, 'views': {}})
+    def im(score, kind='plant', weight=1.0):
+        return {'score': score, 'realistic': score >= 2.75, 'giveaways': [], 'kind': kind, 'weight': weight}
+    real = {'v1-plant-01': {'p_photo': 5, 'verdict': 'synthetic', 'giveaways': [], 'kind': 'plant', 'weight': 1.0}}
+    judged = {'realism': real, 'species': {}, 'impression': {
+        'v1-overview': im(3.5, 'overview', 2.0), 'v1-plant-01': im(3.0), 'v1-plant-02': im(4.0), 'v1-ground-01': im(2.5),
+        'anchor:r': im(5.0, 'anchor_real', 0), 'anchor-synth:s': im(1.5, 'anchor_synthetic', 0)}}
+    bl.write_json(d / 'judge.json', judged)
+    s = bb.summarize(d)
+    assert s['impression_share'] == 0.8 and s['impression_toys'] == [] and s['impression_anchor_ok'] is True
+    assert s['goal_met'] is True
+    judged['impression']['v1-ground-01'] = im(1.0)
+    bl.write_json(d / 'judge.json', judged)
+    s = bb.summarize(d)
+    assert s['impression_toys'] == ['v1-ground-01'] and s['goal_met'] is False

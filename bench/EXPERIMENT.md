@@ -41,9 +41,12 @@ You are running **one** experiment from the photoreal lab backlog. Your job is t
 
 ## Scoring
 
-Ranking is by `win_vs_shipped`: side by side with the shipped output, the share of crops the judge finds more like
-a photograph (50% = no better). The absolute realism score is reported too, but in round 1 every run scored 2–4
-of 100, so it can't separate runs.
+The goal metric is `impression_share`: the share of the fixed crops that give a homeowner a realistic impression
+(score 3 or more of 5 - real living plants of believable species; small AI or CG traces are fine). The goal is 80%
+with no crop scoring as a plastic toy, every gate passing and bloom at 90%. The shipped output scores 1.8 of 5 (4%
+realistic): its plants read as plastic toys. The judge's giveaways name what holds a crop back - mostly plant
+anatomy (cloned leaflets, fused fronds, waxy leaves), plastic material and flat ground. `win_vs_shipped` (side by
+side with the shipped output) and the strict forensic `realism` are reported for reference.
 
 ## Deliverables
 

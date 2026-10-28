@@ -31,6 +31,8 @@ REAL_ANCHORS = 6
 SPECIES_PAIRS_PER_VIEW = 12
 BLOOM_PLANTS_PER_VIEW = 12      # largest plant of each flowering species, biggest first
 BLOOM_MIN_PX = 2500
+GOAL_IMPRESSION_SHARE = 0.8     # goal: share of judged crops giving a realistic impression (judge.impression)
+TOY_SCORE = 1.5                 # a crop scoring below this looks like a plastic toy; the goal allows none
 BLOOM_PASS_SHARE = 0.9          # share of checked flowering plants judged in bloom and true to description
 BLOOM_VOTES = 3                 # bloom verdicts are a majority of this many judge votes
 BLOOM_CROP_MIN = 160            # a bloom crop spans at least this many source px around the plant
@@ -243,11 +245,8 @@ def judge_bloom(bench, d, jd):
     return out
 
 
-def cmd_judge(bench, args, exp_id=None):
-    import judge as jd
-    d = exp_dir(bench, exp_id or args.id)
-    if not bench.crops:
-        raise SystemExit('Run init-crops first')
+def _realism_items(bench, d):
+    """The judged crops of an experiment plus the real and synthetic anchors -> (items, meta)."""
     items, meta = [], {}
     for v in bench.views:
         out = load_out(bench, d, v)
@@ -269,7 +268,31 @@ def cmd_judge(bench, args, exp_id=None):
         key = f'anchor:{p.stem}'
         items.append({'key': key, 'image': bl.load_rgb(p), 'truth': 'photo'})
         meta[key] = {'id': p.stem, 'kind': 'anchor_real', 'weight': 0}
+    return items, meta
+
+
+def cmd_impression(bench, args, exp_id=None):
+    """Add (or redo) only the impression judge in an existing judge.json, then re-summarize."""
+    import judge as jd
+    d = exp_dir(bench, exp_id or args.id)
+    judged = bl.read_json(d / 'judge.json')
+    items, meta = _realism_items(bench, d)
+    imp = jd.impression(items, passes=args.passes, seed=hash(d.name) & 0xffff)
+    judged['impression'] = {k: dict(r, kind=meta[k]['kind'], weight=meta[k].get('weight', 0)) for k, r in imp.items()}
+    bl.write_json(d / 'judge.json', judged)
+    s = summarize(d)
+    print(json.dumps({k: s.get(k) for k in ('id', 'goal_met', 'impression_share', 'impression_mean', 'impression_toys',
+                                            'impression_anchor_ok', 'qualified')}, indent=2))
+
+
+def cmd_judge(bench, args, exp_id=None):
+    import judge as jd
+    d = exp_dir(bench, exp_id or args.id)
+    if not bench.crops:
+        raise SystemExit('Run init-crops first')
+    items, meta = _realism_items(bench, d)
     real = jd.realism(items, passes=args.passes, seed=hash(d.name) & 0xffff)
+    imp = jd.impression(items, passes=args.passes, seed=hash(d.name) & 0xffff)
     pairs = []
     if not args.no_species:
         for v in bench.views:
@@ -277,6 +300,7 @@ def cmd_judge(bench, args, exp_id=None):
     spec = jd.species(pairs) if pairs else {}
     bloom = judge_bloom(bench, d, jd) if bench.bloom else {}
     judged = {'realism': {k: dict(r, kind=meta[k]['kind'], weight=meta[k].get('weight', 0)) for k, r in real.items()},
+              'impression': {k: dict(r, kind=meta[k]['kind'], weight=meta[k].get('weight', 0)) for k, r in imp.items()},
               'species': {k: dict(r, species=next(p['species'] for p in pairs if p['key'] == k)) for k, r in spec.items()},
               'bloom': bloom,
               'judge_cli': ' '.join(jd._cli()), 'passes': args.passes}
@@ -353,8 +377,22 @@ def summarize(d):
             s['bloom'] = {'checked': len(bl_), 'in_bloom': len(ok), 'share': round(share, 3),
                           'pass': share >= BLOOM_PASS_SHARE, 'missing': sorted(x['species'] for k, x in bl_.items()
                                                                                if k not in ok)}
+        im = judged.get('impression') or {}
+        if im:
+            scored = [(x, x['weight']) for x in im.values() if x['kind'] not in ('anchor_real', 'anchor_synthetic')
+                      and x['score'] is not None]
+            wsum = sum(w for _, w in scored) or 1
+            s['impression_share'] = round(sum(w for x, w in scored if x['realistic']) / wsum, 3)
+            s['impression_mean'] = round(sum(x['score'] * w for x, w in scored) / wsum, 2)
+            s['impression_toys'] = sorted(k for k, x in im.items() if x['kind'] not in ('anchor_real', 'anchor_synthetic')
+                                          and x['score'] is not None and x['score'] < TOY_SCORE)
+            anchors = [x for x in im.values() if x['kind'] in ('anchor_real', 'anchor_synthetic') and x['score'] is not None]
+            s['impression_anchor_ok'] = (all((x['kind'] == 'anchor_real') == x['realistic'] for x in anchors)
+                                         if anchors else None)
         if s['gates_pass'] is not None:
             s['qualified'] = bool(s['gates_pass'] and s['species']['pass'] and s.get('bloom', {}).get('pass', True))
+    if 'impression_share' in s and 'qualified' in s:
+        s['goal_met'] = bool(s['qualified'] and s['impression_share'] >= GOAL_IMPRESSION_SHARE and not s['impression_toys'])
     if (d / 'pairwise.json').exists():
         pw = bl.read_json(d / 'pairwise.json')
         scored = [(x['win'], x['weight']) for x in pw['crops'].values() if x['win'] is not None]
@@ -373,7 +411,8 @@ def cmd_score(bench, args):
     if not args.no_pairwise:
         cmd_pairwise(bench, args, args.id)
     s = summarize(exp_dir(bench, args.id))
-    print(json.dumps({k: s.get(k) for k in ('id', 'qualified', 'gates_pass', 'realism', 'photo_share', 'win_vs_shipped',
+    print(json.dumps({k: s.get(k) for k in ('id', 'goal_met', 'impression_share', 'impression_mean', 'impression_toys',
+                                            'qualified', 'gates_pass', 'realism', 'photo_share', 'win_vs_shipped',
                                             'pairwise_sanity', 'judge_anchor_accuracy', 'giveaways')}, indent=2))
 
 
@@ -402,12 +441,13 @@ def main(argv=None):
     p = sub.add_parser('score'); p.add_argument('id'); p.add_argument('--passes', type=int, default=2)
     p.add_argument('--no-species', action='store_true'); p.add_argument('--no-plants', action='store_true')
     p.add_argument('--no-pairwise', action='store_true')
+    p = sub.add_parser('impression'); p.add_argument('id'); p.add_argument('--passes', type=int, default=2)
     p = sub.add_parser('pairwise'); p.add_argument('id'); p.add_argument('--passes', type=int, default=2)
     sub.add_parser('board')
     args = ap.parse_args(argv)
     bench = bl.Bench(args.bench)
     {'init-crops': cmd_init_crops, 'baselines': cmd_baselines, 'new': cmd_new, 'gate': cmd_gate,
-     'judge': cmd_judge, 'pairwise': cmd_pairwise, 'score': cmd_score, 'board': cmd_board}[args.cmd](bench, args)
+     'judge': cmd_judge, 'pairwise': cmd_pairwise, 'impression': cmd_impression, 'score': cmd_score, 'board': cmd_board}[args.cmd](bench, args)
 
 
 if __name__ == '__main__':

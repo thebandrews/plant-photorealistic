@@ -40,6 +40,29 @@ Reply with JSON only, no prose, as a list with one entry per file:
    "giveaways": [{{"type": one of {types}, "where": "<region>", "note": "<short>"}}]}}]
 Give an empty giveaways list when you find none."""
 
+IMPRESSION_LEVELS = ['toy', 'render', 'realistic', 'near_photo', 'photo']
+REALISTIC = 2.75  # mean score that counts as a realistic impression (level 3, allowing one pass at 2 of 2 x 3)
+
+IMPRESSION_PROMPT = """These images are crops of front-yard garden pictures. Some are real photographs; others are design
+visualisations where the plants, ground or paving were rendered in 3D and/or made with AI image generation. They are
+shown to a homeowner as a picture of their future garden. Judge the impression each one gives a homeowner looking at
+it normally, as a picture of a garden - not forensic proof of how it was made.
+
+Open every file with the Read tool and give each a score:
+1 toy: plants look like plastic toys, clay, or video-game or cartoon models; ground looks like a flat CG texture.
+2 render: reads as a computer rendering or CG visualisation; plants read as 3D models rather than living plants.
+3 realistic: reads as a real garden with real living plants of believable species; a close look may find AI or CG
+  traces (slightly too smooth or regular detail, odd small structures, a processed colour grade) - that is fine.
+4 near_photo: only subtle traces that most people would not notice.
+5 photo: indistinguishable from an ordinary camera photograph.
+Judge each image on its own; the mix of photographs and visualisations in this set is unknown.
+
+Files: {files}
+
+Reply with JSON only, no prose, as a list with one entry per file:
+[{{"file": "<name>", "score": <1-5>, "giveaways": [{{"type": one of {types}, "where": "<region>", "note": "<short>"}}]}}]
+List the main things that keep a score below 5; give an empty list when there are none."""
+
 SPECIES_PROMPT = """Each pair below shows the same spot in two images of a planted garden: A is a 3D render used as
 the design, B is the finished image. For each pair you are told what is at the centre: a plant's species and, if it
 flowers, the flowers it should show in bloom; or open ground. B may make plants look more realistic and more like
@@ -93,8 +116,8 @@ def ask(prompt, folder, timeout=1800):
         return out
 
 
-def realism(items, batch_size=10, passes=2, seed=0):
-    """items: [{'key', 'image' (ndarray), 'truth': None|'photo'|'synthetic'}] -> {key: {p_photo, verdict, giveaways}}"""
+def _batched(items, prompt, batch_size, passes, seed):
+    """Judge `items` in shuffled batches, `passes` times; prompt(names) -> text. Returns {key: [reply entries]}."""
     rng = random.Random(seed)
     votes = {}
     for pas in range(passes):
@@ -109,10 +132,9 @@ def realism(items, batch_size=10, passes=2, seed=0):
                     name = f'img-{uuid.uuid4().hex[:8]}.png'
                     Image.fromarray(it['image']).save(folder / name)
                     names[name] = it['key']
-                prompt = REALISM_PROMPT.format(files=', '.join(names), types=GIVEAWAYS)
                 for attempt in range(2):
                     try:
-                        reply = _parse_list(ask(prompt, folder))
+                        reply = _parse_list(ask(prompt(names), folder))
                         break
                     except (ValueError, RuntimeError):
                         if attempt:
@@ -123,6 +145,13 @@ def realism(items, batch_size=10, passes=2, seed=0):
                         votes.setdefault(key, []).append(r)
             finally:
                 shutil.rmtree(folder, ignore_errors=True)
+    return votes
+
+
+def realism(items, batch_size=10, passes=2, seed=0):
+    """items: [{'key', 'image' (ndarray), 'truth': None|'photo'|'synthetic'}] -> {key: {p_photo, verdict, giveaways}}"""
+    votes = _batched(items, lambda names: REALISM_PROMPT.format(files=', '.join(names), types=GIVEAWAYS),
+                     batch_size, passes, seed)
     out = {}
     for it in items:
         rs = votes.get(it['key'], [])
@@ -133,6 +162,24 @@ def realism(items, batch_size=10, passes=2, seed=0):
         photo_votes = sum(r.get('verdict') == 'photo' for r in rs)
         out[it['key']] = {'p_photo': round(p, 1), 'verdict': 'photo' if photo_votes * 2 > len(rs) else 'synthetic',
                           'votes': len(rs), 'agree': photo_votes in (0, len(rs)),
+                          'giveaways': [g for r in rs for g in (r.get('giveaways') or [])]}
+    return out
+
+
+def impression(items, batch_size=10, passes=2, seed=0):
+    """items as for realism() -> {key: {score (mean 1-5), level, realistic (bool), giveaways}}. The goal metric:
+    does the crop give a realistic impression (level >= REALISTIC), forgiving traces only a forensic look finds."""
+    votes = _batched(items, lambda names: IMPRESSION_PROMPT.format(files=', '.join(names), types=GIVEAWAYS),
+                     batch_size, passes, seed)
+    out = {}
+    for it in items:
+        rs = [r for r in votes.get(it['key'], []) if r.get('score') is not None]
+        if not rs:
+            out[it['key']] = {'score': None, 'level': None, 'realistic': None, 'giveaways': [], 'votes': 0}
+            continue
+        score = sum(float(r['score']) for r in rs) / len(rs)
+        out[it['key']] = {'score': round(score, 2), 'level': IMPRESSION_LEVELS[min(4, max(0, round(score) - 1))],
+                          'realistic': score >= REALISTIC, 'votes': len(rs),
                           'giveaways': [g for r in rs for g in (r.get('giveaways') or [])]}
     return out
 

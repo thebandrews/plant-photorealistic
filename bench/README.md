@@ -63,6 +63,15 @@ the landscape) and known synthetic crops (the shipped final), so every score com
 anchors. Two passes in different orders. Realism = weighted mean `p_photo` over the fixed crops
 (overview 2, plants 1.5, ground and hardscape 1). Giveaways are tagged by type to steer the next round.
 
+**Goal metric: impression.** The same crops and anchors go to a second prompt (`judge.impression`) that scores the
+impression a homeowner gets, 1-5: 1 toy (plastic, clay, video-game plants), 2 render, 3 realistic (real living
+plants; small AI or CG traces are fine), 4 near photo, 5 photo. A crop is *realistic* at a mean of 2.75 or more over
+the passes. `impression_share` = weighted share of realistic crops; `goal_met` = qualified and `impression_share`
+>= 0.8 and no crop below 1.5 (`impression_toys`). Calibration on reddy-20261025 (2 passes): real anchors 5.0 (100%
+realistic), raw 3D 1.5 (0%), shipped final 1.8 (4%), D1a 2.4 (31%). The forensic `realism` / `photo_share` (unedited
+photo vs any generated content) stays as a reference; it calls nearly any generated content synthetic.
+`bench.py impression <id>` adds the impression judge to an already scored experiment.
+
 ## Rules for experiment agents
 
 See `EXPERIMENT.md`.
