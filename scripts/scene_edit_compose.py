@@ -1,19 +1,24 @@
 """Compose built-in image-tool scene edits back into the finished photo, and check their review.
 
-Current route (plan schema 2, operation scene_edit_anchor_ownership_v2): the full-view edit is the anchor. Its
-selected result is upscaled to the photo (Lanczos) and decides layout and silhouettes. Each tile edited the
-matching anchor crop, adding native-resolution detail only. Every pixel belongs to exactly one tile (nearest tile
-centre among the tiles covering it), with only a narrow raised-cosine feather at ownership boundaries, so two
-tiles never overlap-blend into doubled leaves. A tile that is not selected, or whose output fails the automated
-alignment check against the anchor (shifted silhouettes), is not used: its area takes the anchor pixels. A seam
-metric compares the neighbouring sources in a band along each ownership boundary and flags likely ghosting for
-the reviewer. The scene then replaces the previous composite only inside the landscape edit region, through a
-raised-cosine inward feather, in linear light. Outside the region every sample stays exactly the previous
-composite, which there is exactly the cleaned original photo; both are asserted.
+Current route (plan schema 3, operation scene_edit_composite_tiles_seam_v3, anchor: none): each tile edited its
+native-resolution crop of the previous photo_finish composite. The base of the scene is that composite. Each
+selected tile output is checked against the composite crop with a structure check (composite_structure_v1): plant
+and bed areas must keep the composite's coarse layout, open bed ground must not gain new structure, and hardscape
+away from plants must keep its lines and edges, more strictly. A tile that is not selected or fails the check is not
+used; its area keeps the composite pixels. Every pixel belongs to exactly one tile. Between neighbouring tiles the
+ownership boundary is a minimum-cost seam through their overlap, placed where the two sources agree (lowest
+luminance difference), with only a narrow raised-cosine feather across it, so two tiles never overlap-blend into
+doubled leaves. A seam metric compares the neighbouring sources in a band along each boundary and flags likely
+ghosting for the reviewer. The scene then replaces the previous composite only inside the landscape edit region,
+through a raised-cosine inward feather, in linear light. Outside the region every sample stays exactly the
+previous composite, which there is exactly the cleaned original photo; both are asserted.
 
-Schema 1 plans (operation scene_edit_raised_cosine_tiles_full_view_linear_v1: independent tiles blended with
-wide raised-cosine overlaps) and their reviews stay verifiable. Visual findings remain the agent's judgments;
-the metrics inform the review, they do not replace it.
+With anchor: full_view (optional), the base is the selected full-view edit upscaled to the photo, tiles edited
+its crops, the alignment check is the anchor edge check (luma_edge_ncc_blocks_v1), and dropped tiles take the
+anchor pixels. Schema 2 plans (operation scene_edit_anchor_ownership_v2: anchored, nearest-centre ownership) and
+schema 1 plans (scene_edit_raised_cosine_tiles_full_view_linear_v1: wide raised-cosine overlaps) and their reviews
+stay verifiable. Visual findings remain the agent's judgments; the metrics inform the review, they do not
+replace it.
 """
 import argparse
 import json
@@ -25,10 +30,13 @@ from PIL import Image
 
 from handoff import checked, read, record, require
 from raster import load, save, scaled_like
-from scene_edit_plan import IMAGE_TOOLS, MAX_ATTEMPTS, MODEL, reference_pixels, region_weight, resized, validate
+from scene_edit_plan import (IMAGE_TOOLS, LENIENT, MAX_ATTEMPTS, MODEL, OPEN_GROUND, STRICT, anchored, reference_pixels,
+                             region_weight, resized, structure, validate)
 
 OPERATION_V1 = 'scene_edit_raised_cosine_tiles_full_view_linear_v1'
-OPERATION = 'scene_edit_anchor_ownership_v2'
+OPERATION_V2 = 'scene_edit_anchor_ownership_v2'
+OPERATION = 'scene_edit_composite_tiles_seam_v3'
+OPERATIONS = {1: OPERATION_V1, 2: OPERATION_V2, 3: OPERATION}
 # Schema 1 review check set (legacy reviews only).
 SCENE_CHECKS_V1 = ('species_fidelity', 'no_invented_or_hybrid_plants', 'plants_rooted_in_beds',
                    'hardscape_geometry_preserved', 'flowering_in_bloom', 'no_visible_seams', 'house_background_retained')
@@ -48,9 +56,42 @@ DOWNGRADING_DEFECTS = ('invented_plant', 'bloom_missing')
 # of a tile (25 px) scored global 0.79 but 11% low blocks.
 ALIGNMENT = {'metric': 'luma_edge_ncc_blocks_v1', 'min_side_px': 64, 'blur_sigma': 1.0, 'block_px': 48,
              'global_min': .55, 'block_low': .4, 'max_low_block_fraction': .1, 'flat_std': 1e-3}
+# Tile structure check against the previous composite (schema 3, no anchor). A real photographic re-render of the CG
+# composite changes leaf and surface texture completely, and plants may move a little and fill out, so the check
+# compares coarse luminance edge maps (Gaussian sigma 1.5 after INTER_AREA reduction, Sobel magnitude) per class
+# of the plan's structure.png, in blocks of about 128 native px:
+# - lenient (plants, and bed within 64 px of a plant) at 1/8 scale (~12 px blur): global NCC >= lenient_global_min.
+# - open bed ground (> 64 px from any plant) at 1/8 scale: per block, the edge energy the tile adds where the
+#   composite has none (max(tile - dilate(composite, 5 px)), relative to the tile's typical composite block edge
+#   energy) <= open_ground_added_max.
+# - strict (hardscape and photo pixels > 48 px from any plant) at 1/4 scale (~6 px blur): global NCC >=
+#   strict_global_min; every block where the composite has structure keeps NCC >= strict_block_min; added edge
+#   energy per block <= strict_added_max.
+# Calibration: synthetic 1152x1024 gardens (16 leaf-rosette plants on mulch, a jointed slab and a wall; 8 layouts)
+# re-rendered "photographically" (all leaf/mulch/concrete texture replaced, colour shift, every plant moved by up to
+# sigma 12 px with 40% more leaves): lenient global 0.76-0.97, open-ground added <= 0.16, strict global >= 0.97,
+# strict worst block >= 0.51, strict added <= 0.39, so 0 of 40 rejected. With 2-3 px drift and 0.5% zoom on top, 1 of 8
+# is rejected (strict added 0.74); with 4 px drift and 1% zoom (about 10 px misregistration at the tile edge, which
+# kinks joints at a seam) 7 of 8 are. Failures: whole-content shift 24-40 px lenient global <= 0.50 and strict global <= 0.35; a different layout
+# lenient global <= 0.50; a plant added in open ground added 0.34-0.80; a slab joint moved 24 px strict block
+# <= 0.07; the slab edge moved 30 px strict block <= 0.17; a slab joint added strict added 0.49-0.61. A missing,
+# swapped or moved single plant inside dense planting is NOT reliably measurable this way: the visual review's
+# species check and invented_plant defect cover it.
+COMPOSITE_ALIGNMENT = {'metric': 'composite_structure_v1', 'min_side_px': 64, 'blur_sigma': 1.5, 'block_native_px': 128,
+                       'lenient_scale': .125, 'strict_scale': .25, 'structured_block': .35, 'residual_dilate_px': 5,
+                       'flat_std': 1e-4, 'ref_floor': 1e-3, 'lenient_global_min': .65, 'open_ground_added_max': .3,
+                       'strict_global_min': .6, 'strict_block_min': .3, 'strict_added_max': .45}
 # Seam/double-image metric: the same edge NCC between the two neighbouring sources in a band of
 # band_px_per_feather x seam feather on each side of an ownership boundary. Below flag_below = likely ghosting.
 SEAMS = {'metric': 'luma_edge_ncc_band_v1', 'band_px_per_feather': 2, 'flag_below': .4}
+# Schema 3: a band whose two sources agree in luminance (mean absolute difference below agree_luma_diff, 8-bit levels)
+# cannot hold a double image, so it is never flagged however flat (and so uncorrelated) its edges are.
+SEAMS_V3 = {**SEAMS, 'metric': 'luma_edge_ncc_band_v2', 'agree_luma_diff': 2.0}
+# Ownership boundaries (schema 3): between two neighbouring tiles (same row or same column), a minimum-cost path
+# across their overlap, at least seam_feather_px inside both tiles. Cost is the Gaussian-blurred (cost_sigma_px)
+# absolute luminance difference of the two sources inside the edit region (0 outside it), plus a small penalty
+# (centre_penalty at the edge of the allowed band) that keeps the seam near the overlap midline where they agree.
+OWNERSHIP = {'method': 'min_cost_seam_v1', 'cost_sigma_px': 2.0, 'centre_penalty': .01}
 LUMA = np.array([.2126, .7152, .0722], np.float32)
 BLOCK = 256
 
@@ -122,8 +163,9 @@ def check_attempts(plan, attempts, base):
     planned = {j['id']: j for j in plan['jobs']}
     rows = {j['id']: j for j in attempts['jobs']}
     require(len(rows) == len(attempts['jobs']) and set(rows) == set(planned), 'Record every planned scene edit job exactly once')
-    full = next(j for j in plan['jobs'] if j['kind'] == 'full_view')
-    anchor = rows['full']['selected']
+    full = next((j for j in plan['jobs'] if j['kind'] == 'full_view'), None)
+    with_anchor = schema >= 2 and anchored(schema, plan['params'])
+    anchor = rows['full']['selected'] if full is not None else None
     for job_id, row in rows.items():
         job = planned[job_id]; tries = row['attempts']
         require(len(tries) <= MAX_ATTEMPTS, f'At most {MAX_ATTEMPTS} attempts per scene edit job')
@@ -141,6 +183,12 @@ def check_attempts(plan, attempts, base):
             resized(checked(a['raw'], base), job['box'])
             if schema == 1:
                 check_attempt_v1(job, a, rows, full, base)
+            elif job['kind'] == 'tile' and not with_anchor:
+                require(not a.get('anchor_from'), f'Tile {job_id} edits its composite crop; this plan has no anchor')
+                for key in ('input', 'reference'):
+                    if a.get(key):
+                        got, _ = load(checked(a[key], base)); want, _ = load(checked(job['input'], base))
+                        require(np.array_equal(got, want), f'Tile {key} is not the planned composite crop: {job_id}')
             elif job['kind'] == 'tile':
                 require(anchor, 'Tiles start only from an accepted full-view anchor; with no anchor, fall back without tiles')
                 require(a.get('input') and a.get('anchor_from') == anchor,
@@ -154,7 +202,7 @@ def check_attempts(plan, attempts, base):
                 require(blocking is None or isinstance(blocking, dict) and set(blocking) == set(BLOCKING_CHECKS) and
                         all(v in ('pass', 'fail') for v in blocking.values()),
                         'Full-view blocking findings need pass or fail for each blocking check')
-    if schema >= 2 and anchor:
+    if with_anchor and anchor:
         blocking = rows['full']['attempts'][anchor - 1].get('blocking')
         require(blocking is not None, 'Review the full-view anchor against the blocking checks before tiles')
         require(all(v == 'pass' for v in blocking.values()),
@@ -238,8 +286,12 @@ def tile_jobs(plan):
     return [j for j in plan['jobs'] if j['kind'] == 'tile']
 
 
-def ownership(plan, h, w):
-    """Label map: index of the planned tile whose centre is nearest among the tiles covering a pixel; -1 uncovered."""
+def ownership(plan, h, w, source=None, region=None, feather=None):
+    """Label map: index of the owning planned tile; -1 uncovered.
+
+    Starts from the tile whose centre is nearest among the tiles covering a pixel (schema 2 stops there). With
+    `source` (k, box) -> RGB8, each pair of neighbouring tiles then re-splits its overlap along a minimum-cost seam
+    (seam_path). Each pixel still has exactly one owner, a tile that covers it."""
     tiles = tile_jobs(plan)
     require(len(tiles) < 255, 'Too many scene edit tiles')
     labels = np.full((h, w), -1, np.int16); best = np.full((h, w), np.inf, np.float32)
@@ -251,7 +303,67 @@ def ownership(plan, h, w):
         nearer = d < best[y0:y1, x0:x1]
         best[y0:y1, x0:x1][nearer] = d[nearer]
         labels[y0:y1, x0:x1][nearer] = k
+    if source is None:
+        return labels
+    for a, b, axis in neighbours(tiles):
+        ax0, ay0, ax1, ay1 = tiles[a]['box']; bx0, by0, bx1, by1 = tiles[b]['box']
+        box = (max(ax0, bx0), max(ay0, by0), min(ax1, bx1), min(ay1, by1))
+        x0, y0, x1, y1 = box
+        cost = np.abs(luma(source(a, box)) - luma(source(b, box)))
+        cost = cv2.GaussianBlur(cost, (0, 0), OWNERSHIP['cost_sigma_px']) * region[y0:y1, x0:x1]
+        if axis == 0:  # top/bottom neighbours: a horizontal seam, solved on the transpose
+            cost = cost.T
+        cut = seam_path(cost, feather)
+        if cut is None:
+            continue
+        across = np.arange(cost.shape[1])[None, :] < cut[:, None]  # True on a's side (left, or above)
+        if axis == 0:
+            across = across.T
+        window = labels[y0:y1, x0:x1]
+        mine = (window == a) | (window == b)
+        window[mine] = np.where(across, a, b)[mine]
     return labels
+
+
+def neighbours(tiles):
+    """Pairs (a, b, axis) of consecutive overlapping tiles in one row (axis 1, a left of b) or column (axis 0, a above
+    b). Row pairs come first, so column seams have the last word where four tiles meet."""
+    rows, cols = {}, {}
+    for k, t in enumerate(tiles):
+        x0, y0, x1, y1 = t['box']
+        rows.setdefault((y0, y1), []).append((x0, k)); cols.setdefault((x0, x1), []).append((y0, k))
+    out = []
+    for axis, groups in ((1, rows), (0, cols)):
+        for members in groups.values():
+            members.sort()
+            for (_, a), (_, b) in zip(members, members[1:]):
+                ab, bb = tiles[a]['box'], tiles[b]['box']
+                if (bb[0] < ab[2]) if axis == 1 else (bb[1] < ab[3]):
+                    out.append((a, b, axis))
+    return out
+
+
+def seam_path(cost, margin):
+    """Minimum-cost top-to-bottom path through cost (rows x columns), staying `margin` columns inside both sides.
+    Returns the cut column per row (columns < cut belong to the left source), or None when the overlap is too narrow."""
+    h, w = cost.shape
+    lo, hi = margin, w - margin
+    if hi - lo < 1:
+        return None
+    mid = w / 2; half = max(1., (hi - lo) / 2)  # a cut at column c is the boundary left of pixel c
+    c = cost[:, lo:hi].astype(np.float64) + OWNERSHIP['centre_penalty'] * np.abs(np.arange(lo, hi) - mid)[None, :] / half
+    acc = c.copy(); step = np.zeros(c.shape, np.int8)
+    for y in range(1, h):
+        prev = acc[y - 1]
+        left = np.concatenate([[np.inf], prev[:-1]]); right = np.concatenate([prev[1:], [np.inf]])
+        options = np.stack([left, prev, right])
+        pick = np.argmin(options, axis=0)
+        step[y] = pick - 1
+        acc[y] += options[pick, np.arange(len(prev))]
+    path = np.empty(h, np.int64); path[-1] = int(np.argmin(acc[-1]))
+    for y in range(h - 1, 0, -1):
+        path[y - 1] = path[y] + step[y, path[y]]
+    return path + lo
 
 
 def label_weights(labels, plan, feather):
@@ -309,10 +421,11 @@ def analysis_scale(shape, anchor_scale):
     return min(1.0, max(anchor_scale, ALIGNMENT['min_side_px'] / max(1, min(h, w))))
 
 
-def edge_maps(images, mask, scale):
+def edge_maps(images, mask, scale, sigma=None):
     h, w = mask.shape
     size = (max(1, round(w * scale)), max(1, round(h * scale)))
-    maps = [edges(cv2.resize(luma(im), size, interpolation=cv2.INTER_AREA), ALIGNMENT['blur_sigma']) for im in images]
+    sigma = ALIGNMENT['blur_sigma'] if sigma is None else sigma
+    maps = [edges(cv2.resize(luma(im), size, interpolation=cv2.INTER_AREA), sigma) for im in images]
     m = cv2.resize(mask.astype(np.float32), size, interpolation=cv2.INTER_AREA) >= .5
     return maps, m
 
@@ -343,7 +456,75 @@ def alignment(tile8, anchor8, mask, anchor_scale):
             'worst_block_ncc': r4(min(blocks)) if blocks else None, 'aligned': bool(aligned)}
 
 
-def seam_rows(labels, plan, region, source, used, anchor_scale, feather):
+def class_scale(shape, scale):
+    h, w = shape[:2]
+    return min(1.0, max(scale, COMPOSITE_ALIGNMENT['min_side_px'] / max(1, min(h, w))))
+
+
+def blocks_of(shape, bp):
+    h, w = shape; ny, nx = max(1, round(h / bp)), max(1, round(w / bp))
+    for i in range(ny):
+        for j in range(nx):
+            yield slice(i * h // ny, (i + 1) * h // ny), slice(j * w // nx, (j + 1) * w // nx)
+
+
+def structure_rows(tile8, comp8, region, classes, scale):
+    """Per-class global edge NCC and per-block (NCC where the composite has structure, added edge energy) at one scale."""
+    cfg = COMPOSITE_ALIGNMENT; flat = cfg['flat_std']
+    s = class_scale(region.shape, scale)
+    (et, ec), m = edge_maps([tile8, comp8], region, s, cfg['blur_sigma'])
+    size = m.shape[::-1]; bp = max(2, round(cfg['block_native_px'] * s))
+    grid = list(blocks_of(m.shape, bp))
+    means = [float(ec[ys, xs][m[ys, xs]].mean()) for ys, xs in grid if m[ys, xs].mean() >= .25]
+    ref = max(float(np.percentile(means, 75)) if means else 0., cfg['ref_floor'])
+    k = cfg['residual_dilate_px']
+    added_map = np.maximum(et - cv2.dilate(ec, np.ones((k, k), np.uint8)), 0)
+    out = {}
+    for name, cls in classes.items():
+        c = (cv2.resize(cls.astype(np.float32), size, interpolation=cv2.INTER_AREA) >= .99) & m
+        rows = []
+        for ys, xs in grid:
+            bm = c[ys, xs]
+            if bm.sum() < max(4, .25 * bm.size):
+                continue
+            structured = float(ec[ys, xs][bm].mean()) / ref >= cfg['structured_block']
+            rows.append({'ncc': ncc(ec[ys, xs], et[ys, xs], bm, flat) if structured else None,
+                         'added': float(added_map[ys, xs][bm].mean()) / ref})
+        out[name] = {'analysis_scale': r4(s), 'global_ncc': r4(ncc(ec, et, c, flat)), 'rows': rows}
+    return out
+
+
+def composite_alignment(tile8, comp8, classes):
+    """Does the tile keep the composite's structure? classes: the plan's structure.png crop (0 outside the region)."""
+    cfg = COMPOSITE_ALIGNMENT
+    region = classes > 0
+    lenient = structure_rows(tile8, comp8, region, {'lenient': (classes == LENIENT) | (classes == OPEN_GROUND),
+                                                    'open_ground': classes == OPEN_GROUND}, cfg['lenient_scale'])
+    strict = structure_rows(tile8, comp8, region, {'strict': classes == STRICT}, cfg['strict_scale'])['strict']
+    worst = [r['ncc'] for r in strict['rows'] if r['ncc'] is not None]
+    peak = lambda rows: r4(max([r['added'] for r in rows] or [0.]))
+    result = {'lenient': {'analysis_scale': lenient['lenient']['analysis_scale'], 'global_ncc': lenient['lenient']['global_ncc']},
+              'open_ground': {'blocks': len(lenient['open_ground']['rows']), 'max_added': peak(lenient['open_ground']['rows'])},
+              'strict': {'analysis_scale': strict['analysis_scale'], 'global_ncc': strict['global_ncc'],
+                         'structured_blocks': len(worst), 'worst_block_ncc': r4(min(worst)) if worst else None,
+                         'max_added': peak(strict['rows'])}}
+    failed = []
+    g = result['lenient']['global_ncc']
+    if g is not None and g < cfg['lenient_global_min']:
+        failed.append('lenient_global_ncc')
+    if result['open_ground']['max_added'] > cfg['open_ground_added_max']:
+        failed.append('open_ground_added_structure')
+    g = result['strict']['global_ncc']
+    if g is not None and g < cfg['strict_global_min']:
+        failed.append('strict_global_ncc')
+    if worst and min(worst) < cfg['strict_block_min']:
+        failed.append('strict_block_ncc')
+    if result['strict']['max_added'] > cfg['strict_added_max']:
+        failed.append('strict_added_structure')
+    return {**result, 'failed': failed, 'aligned': not failed}
+
+
+def seam_rows(labels, plan, region, source, used, anchor_scale, feather, base_name='anchor', config=SEAMS):
     """Compare the two neighbouring sources in a band along every tile-tile ownership boundary."""
     tiles = tile_jobs(plan); band = SEAMS['band_px_per_feather'] * feather; rows = []
     for i in range(len(tiles)):
@@ -368,11 +549,13 @@ def seam_rows(labels, plan, region, source, used, anchor_scale, feather):
             (ei, ej), m = edge_maps(crops, bm, analysis_scale(bm.shape, anchor_scale))
             score = r4(ncc(ei, ej, m, ALIGNMENT['flat_std']))
             diff = np.abs(luma(crops[0]) - luma(crops[1]))[bm]
+            mad = r4(255 * float(diff.mean()))
             rows.append({'pair': [tiles[i]['id'], tiles[j]['id']],
-                         'sources': ['tile' if used[i] else 'anchor', 'tile' if used[j] else 'anchor'],
+                         'sources': ['tile' if used[i] else base_name, 'tile' if used[j] else base_name],
                          'bbox': list(box), 'band_pixels': int(b.sum()),
-                         'edge_ncc': score, 'mean_abs_luma_diff': r4(255 * float(diff.mean())),
-                         'likely_ghosting': bool(score is not None and score < SEAMS['flag_below'])})
+                         'edge_ncc': score, 'mean_abs_luma_diff': mad,
+                         'likely_ghosting': bool(score is not None and score < config['flag_below'] and
+                                                 mad >= config.get('agree_luma_diff', 0))})
     return rows
 
 
@@ -381,38 +564,53 @@ def raw_scale(raw_path, box):
         return im.width / (box[2] - box[0])
 
 
-def reconstruct_v2(plan, region, composite, rows, base):
+def reconstruct_tiles(plan, region, composite, rows, base):
+    """Schema 2 and 3: base image (the composite, or the upscaled anchor), checked tiles, one owner per pixel.
+    ref8 is the 8-bit base the tiles are checked and seamed against."""
     h, w = composite.shape[:2]
+    schema = plan['schema_version']
     weight = region_weight(region, plan['params']['feather_px'])
     feather = plan['params']['seam_feather_px']
-    full_job = next(j for j in plan['jobs'] if j['kind'] == 'full_view')
-    full_raw = selected_raw(rows, 'full', base)
-    require(full_raw is not None, 'The scene edit needs a selected full-view anchor; otherwise fall back without a proof')
-    anchor = resized(full_raw, full_job['box'])
-    scale = raw_scale(full_raw, full_job['box'])
+    with_anchor = anchored(schema, plan['params'])
+    if with_anchor:
+        full_job = next(j for j in plan['jobs'] if j['kind'] == 'full_view')
+        full_raw = selected_raw(rows, 'full', base)
+        require(full_raw is not None, 'The scene edit needs a selected full-view anchor; otherwise fall back without a proof')
+        ref8 = resized(full_raw, full_job['box'])
+        scale = raw_scale(full_raw, full_job['box'])
+        check = lambda out, box: alignment(out, ref8[box[1]:box[3], box[0]:box[2]], region[box[1]:box[3], box[0]:box[2]], scale)
+        base_info, base_name, config = ({'job': 'full', 'attempt': rows['full']['selected'], 'scale': r4(scale)}, 'anchor', ALIGNMENT)
+        fill = ref8
+    else:
+        ref8 = to8(composite)
+        classes = structure(plan, base)
+        scale = COMPOSITE_ALIGNMENT['strict_scale']  # seam band analysis scale
+        check = lambda out, box: composite_alignment(out, ref8[box[1]:box[3], box[0]:box[2]], classes[box[1]:box[3], box[0]:box[2]])
+        base_info, base_name, config = ({'source': 'previous_composite'}, 'composite', COMPOSITE_ALIGNMENT)
+        fill = composite  # dropped tiles keep the composite at full precision; ref8 is only compared
     tiles = tile_jobs(plan)
     outputs, used, aligned = {}, [], []
     for k, job in enumerate(tiles):
         raw = selected_raw(rows, job['id'], base)
-        x0, y0, x1, y1 = job['box']
         row = {'id': job['id'], 'selected': rows[job['id']]['selected']}
         if raw is not None:
             out = resized(raw, job['box'])
-            row.update(alignment(out, anchor[y0:y1, x0:x1], region[y0:y1, x0:x1], scale))
+            row.update(check(out, job['box']))
             if row['aligned']:
                 outputs[k] = out
         row['used'] = k in outputs
         used.append(row['used']); aligned.append(row)
-    labels = ownership(plan, h, w)
 
     def source(k, box):
         x0, y0, x1, y1 = box
         if k in outputs:
             tx, ty = tiles[k]['box'][:2]
             return outputs[k][y0 - ty:y1 - ty, x0 - tx:x1 - tx]
-        return anchor[y0:y1, x0:x1]
+        return ref8[y0:y1, x0:x1]
 
-    seams = seam_rows(labels, plan, region, source, used, scale, feather)
+    labels = ownership(plan, h, w) if schema == 2 else ownership(plan, h, w, source, region, feather)
+    seam_config = SEAMS if schema == 2 else SEAMS_V3
+    seams = seam_rows(labels, plan, region, source, used, scale, feather, base_name, seam_config)
     weights = label_weights(labels, plan, feather)
     final = composite.copy()
     for b0 in range(0, h, BLOCK):
@@ -420,8 +618,8 @@ def reconstruct_v2(plan, region, composite, rows, base):
         wr = weight[b0:b1]
         if not np.any(wr > 0):
             continue
-        anchor_lin = linear(anchor[b0:b1])
-        num = np.zeros_like(anchor_lin); den = np.zeros((b1 - b0, w), np.float32)
+        fill_lin = linear(fill[b0:b1])
+        num = np.zeros_like(fill_lin); den = np.zeros((b1 - b0, w), np.float32)
         for k, (x0, y0, x1, y1), lw in weights:
             r0, r1 = max(b0, y0), min(b1, y1)
             if r0 >= r1:
@@ -431,20 +629,24 @@ def reconstruct_v2(plan, region, composite, rows, base):
                 tx, ty = tiles[k]['box'][:2]
                 src = linear(outputs[k][r0 - ty:r1 - ty, x0 - tx:x1 - tx])
             else:
-                src = anchor_lin[r0 - b0:r1 - b0, x0:x1]
+                src = fill_lin[r0 - b0:r1 - b0, x0:x1]
             num[r0 - b0:r1 - b0, x0:x1] += src * wk[..., None]
             den[r0 - b0:r1 - b0, x0:x1] += wk
-        scene = np.divide(num, den[..., None], out=anchor_lin.copy(), where=den[..., None] > 0)
+        scene = np.divide(num, den[..., None], out=fill_lin.copy(), where=den[..., None] > 0)
         base_lin = linear(composite[b0:b1])
         mix = wr[..., None] * scene + (1 - wr[..., None]) * base_lin
         finish_block(final, composite, mix, wr, b0, b1)
     require(np.array_equal(final[~region], composite[~region]), 'Scene edit changed pixels outside the landscape edit region')
-    metrics = {'anchor': {'job': 'full', 'attempt': rows['full']['selected'], 'scale': r4(scale)},
-               'alignment': {**ALIGNMENT, 'tiles': aligned},
-               'seams': {**SEAMS, 'seam_feather_px': feather, 'pairs': seams,
+    metrics = {'alignment': {**config, 'tiles': aligned},
+               'seams': {**seam_config, 'seam_feather_px': feather, 'pairs': seams,
                          'flagged': sum(r['likely_ghosting'] for r in seams)},
                'used_tiles': [t['id'] for k, t in enumerate(tiles) if used[k]]}
-    return final, weight, (labels + 1).astype(np.uint8), metrics, anchor
+    if schema == 2:
+        metrics['anchor'] = base_info
+    else:
+        metrics |= {'base': base_info if not with_anchor else {'source': 'anchor', **base_info},
+                    'ownership_boundary': {**OWNERSHIP, 'margin_px': feather}}
+    return final, weight, (labels + 1).astype(np.uint8), metrics, ref8
 
 
 def outside_is_cleaned_photo(region, composite, cleaned):
@@ -457,7 +659,8 @@ def to8(a):
 
 
 def proof_panel(job, rows, composite, final, base, anchor=None):
-    """input | resized output (grey when unselected) | final crop. Schema 2 tile inputs are the anchor crop."""
+    """input | resized output (grey when unselected) | final crop. Tile inputs are the composite crop, or the anchor
+    crop in the anchored route."""
     x0, y0, x1, y1 = job['box']
     row = rows[job['id']]
     gen = (resized(checked(row['attempts'][row['selected'] - 1]['raw'], base), job['box']) if row['selected']
@@ -480,7 +683,8 @@ def compose(plan_path, manifest, out):
     v2 = plan['schema_version'] >= 2
     anchor = None
     if v2:
-        final, weight, labels, metrics, anchor = reconstruct_v2(plan, region, composite, rows, pp.parent)
+        final, weight, labels, metrics, base_image = reconstruct_tiles(plan, region, composite, rows, pp.parent)
+        anchor = base_image if anchored(plan['schema_version'], plan['params']) else None
     else:
         final, weight, coverage = reconstruct_v1(plan, region, composite, rows, pp.parent)
     out = Path(out).resolve(); require(not out.exists(), 'Use a new scene edit output directory'); (out / 'proofs').mkdir(parents=True)
@@ -490,7 +694,7 @@ def compose(plan_path, manifest, out):
     for job in plan['jobs']:
         proof_panel(job, rows, composite, final, pp.parent, anchor).save(out / 'proofs' / f"{job['id']}.png")
         proofs[job['id']] = record(out / 'proofs' / f"{job['id']}.png")
-    proof = {'kind': 'scene_edit_proof', 'operation': OPERATION if v2 else OPERATION_V1, 'plan': record(pp), 'attempts': attempts,
+    proof = {'kind': 'scene_edit_proof', 'operation': OPERATIONS[plan['schema_version']], 'plan': record(pp), 'attempts': attempts,
              'candidate': record(out / 'candidate.png'), 'region_weight': record(out / 'region-weight.png')}
     if v2:
         Image.fromarray(labels).save(out / 'ownership.png')
@@ -517,17 +721,17 @@ def close(a, b, tol=2e-3):
 
 
 def verify(proof, base):
-    require(proof.get('kind') == 'scene_edit_proof' and proof.get('operation') in (OPERATION, OPERATION_V1), 'Scene edit proof required')
+    require(proof.get('kind') == 'scene_edit_proof' and proof.get('operation') in OPERATIONS.values(), 'Scene edit proof required')
     pp = checked(proof['plan'], base)
     plan, region, composite, cleaned, baseline = validate(read(pp), pp.parent)
-    v2 = proof['operation'] == OPERATION
-    require(v2 == (plan['schema_version'] >= 2), 'Scene edit proof operation does not match its plan schema')
+    require(proof['operation'] == OPERATIONS[plan['schema_version']], 'Scene edit proof operation does not match its plan schema')
+    v2 = plan['schema_version'] >= 2
     outside_is_cleaned_photo(region, composite, cleaned)
     attempts = proof['attempts']
     checked(attempts['manifest'], base)
     rows = check_attempts(plan, attempts, pp.parent)
     if v2:
-        final, weight, labels, metrics, _ = reconstruct_v2(plan, region, composite, rows, pp.parent)
+        final, weight, labels, metrics, _ = reconstruct_tiles(plan, region, composite, rows, pp.parent)
         maps = (('region_weight', np.rint(weight * 255)), ('ownership', labels))
         require(close(metrics, {k: proof.get(k) for k in metrics}), 'Scene edit alignment/seam metrics differ')
     else:
@@ -605,8 +809,8 @@ def scene_findings(vision, rows, proof, fallback, base):
         if r['id'] == 'full':
             require(r['blocking'] == 'pass', 'The full-view anchor fails a blocking check: fall back to the previous composite')
         else:
-            require(r['blocking'] == 'pass', f"Tile {r['id']} fails a blocking check: deselect it (its area takes the "
-                                             'anchored full-view pixels) and recompose')
+            require(r['blocking'] == 'pass', f"Tile {r['id']} fails a blocking check: deselect it (its area keeps the "
+                                             'previous composite, or the anchor in the anchored route) and recompose')
     return failing, defects
 
 
@@ -643,7 +847,7 @@ def check_review(data, base):
                 vision.get('native_size_crops_loaded') is True and vision.get('observations'), 'Actual scene edit review of source, final and native-size crops required')
         from botanical_refinement import images
         images(vision.get('paired_evidence'), base)
-        if proof['operation'] == OPERATION:
+        if proof['operation'] in (OPERATION, OPERATION_V2):
             nonpassing, defects = scene_findings(vision, rows, proof, fallback, base)
         else:
             require(vision.get('check_set') is None, 'Schema 1 scene edit proofs keep their original review checks')
@@ -682,8 +886,8 @@ def check_review(data, base):
                    'blocking_checks': {k: 'fail' if k in nonpassing else 'pass' for k in BLOCKING_CHECKS},
                    'defects': defects, 'defect_count': len(defects), 'non_blocking_observations': observed,
                    'used_tiles': proof['used_tiles'],
-                   'tile_alignment': {t['id']: {k: t.get(k) for k in ('aligned', 'used', 'global_ncc', 'low_block_fraction')}
-                                      for t in proof['alignment']['tiles']},
+                   'tile_alignment': {t['id']: {k: t.get(k) for k in ('aligned', 'used', 'failed', 'global_ncc', 'low_block_fraction')
+                                                if k in t} for t in proof['alignment']['tiles']},
                    'seams_flagged': proof['seams']['flagged']}
     return result
 
@@ -696,7 +900,7 @@ if __name__ == '__main__':
     if a.command == 'compose':
         r = compose(a.plan, a.attempts, a.out)
         result = {'candidate': r['candidate'], 'proof': str(Path(a.out).resolve() / 'scene-edit-proof.json'), 'region_pixels': r['region_pixels']}
-        if r['operation'] == OPERATION:
+        if r['operation'] != OPERATION_V1:
             result |= {'used_tiles': r['used_tiles'],
                        'rejected_by_alignment': [t['id'] for t in r['alignment']['tiles'] if t['selected'] and not t['used']],
                        'seams_flagged': r['seams']['flagged']}

@@ -7,10 +7,16 @@ inventory (species, IDs, positions as % of the crop, projected pixel sizes, edge
 from the actual renderer object IDs. Plant descriptions and bloom come from the agent's plant records file.
 Deterministic: validate() re-derives every field. No image generation or recognition happens here.
 
-Plan schema 2 (current): the full-view edit is the anchor. Each tile edits the matching crop of the upscaled,
-accepted full-view result (`tile-input`) and only adds native-resolution detail; the planned composite crop
-(`geometry.png`) is a secondary geometry reference. Schema 1 plans (tiles edited from the composite crop, with
-the full-view crop as style reference) stay verifiable.
+Plan schema 3 (current): `anchor: none` (default). Each tile edits its native-resolution crop of the photo_finish
+composite (`jobs/tile-NN/input.png`) directly, so plants stay large enough for the image tool to keep their species.
+There is no full-view job. The plan also freezes `structure.png`, the per-pixel classes the compose step uses to
+check each tile against the composite: 1 plants and bed near plants (lenient), 2 open bed ground away from plants
+(no added structure), 3 hardscape and photo pixels away from plants (strict). `anchor: full_view` keeps the
+optional anchored route: one full-view job, whose accepted result is upscaled and cropped for each tile
+(`tile-input`), with the composite crop (`geometry.png`) as a geometry reference only.
+
+Schema 2 plans (always anchored, lab P2) and schema 1 plans (tiles edited from the composite crop, with the
+full-view crop as style reference) stay verifiable.
 """
 import argparse
 import json
@@ -28,9 +34,16 @@ KIND = 'scene_photographic_edit_plan'
 MODEL = {'agent_model': 'gpt-6-astra', 'reasoning_effort': 'high'}
 IMAGE_TOOLS = ('image_gen.imagegen', 'image_gen__imagegen')
 MAX_ATTEMPTS = 2
-PLAN_SCHEMA = 2
+PLAN_SCHEMA = 3
+SCHEMAS = (1, 2, 3)
+ANCHORS = ('none', 'full_view')
 DEFAULTS = {'tile': [1152, 1024], 'overlap': .3, 'margin_px': 24, 'feather_px': 24}
 DEFAULTS_V2 = {**DEFAULTS, 'seam_feather_px': 20}
+DEFAULTS_V3 = {**DEFAULTS_V2, 'anchor': 'none'}
+# structure.png classes (schema 3): how strictly a tile must keep the composite's structure at each pixel.
+OUTSIDE, LENIENT, OPEN_GROUND, STRICT = 0, 1, 2, 3
+HARDSCAPE_CLEARANCE_PX = 48  # hardscape/photo pixels farther than this from any plant are strict (foliage may overhang)
+OPEN_GROUND_CLEARANCE_PX = 64  # bed ground farther than this from any plant must not gain new structure
 
 # Schema 1 prompts (kept so schema 1 plans re-derive exactly).
 PREAMBLE_V1 = (
@@ -74,6 +87,21 @@ TILE_PREAMBLE = (
     "which, never to move anything toward it or copy its rendered look. {ground} Plants stay rooted in beds, never in "
     "concrete, paving or steps. For identification only, the plants in this tile (positions are percentages of the tile "
     "from the top left; sizes are approximate pixels):")
+# Schema 3 tiles without an anchor: each tile is a full photographic edit of its own native-resolution composite crop.
+TILE_PREAMBLE_V3 = (
+    "Use case: photo edit. Edit target: the supplied image, one native-resolution tile of an existing designed garden in a "
+    "real site photograph. Neighbouring tiles are edited separately and must line up with this one, so keep this exact "
+    "crop. Make it an ordinary real photograph, with botanically authentic living plants. Keep the same camera, crop, "
+    "perspective and lighting. Keep {hardscape} exactly in place with identical geometry: no added, removed, moved or "
+    "doubled slab joints, edges, steps, walls, gravel strips or structures; {materials}. {ground} Every plant stays rooted "
+    "in its bed, never growing out of concrete, paving, steps or walls; foliage may naturally overhang an edge. No new "
+    "pots, steps, paving, structures or text, and no new plants in empty bed ground. Keep photographic areas outside the "
+    "landscape unchanged. Every plant stays in place as its listed species and form, at its listed position and size: "
+    "natural leaf movement, fuller foliage and a natural outline are fine, but never move, remove, replace or merge a "
+    "plant. Plants cut by the tile edge stay cut there. The following inventory lists every visible plant, including edge "
+    "fragments: x and y are percentages from the top left, width and height are projected visible pixel sizes in the "
+    "supplied image, not physical centimetres. Do not complete clipped plants or expose occluded plants. No invented "
+    "hybrid foliage. Every flowering plant is in full bloom, true to its cultivar.")
 MULCH = 'Ground inside beds is shredded bark mulch.'
 NO_MULCH = 'Ground inside beds keeps its existing designed material.'
 HARDSCAPE = 'concrete, steps, walls, planters, edging and the house'
@@ -161,12 +189,29 @@ def species_line(name, record_, rows):
     return f"{name} ({record_['common_name']}; {record_['description']}); flowers: {flowers}. Instances: {instances}"
 
 
-def prompt(job, rows, records, mulch, schema=PLAN_SCHEMA):
+def anchored(schema, params):
+    """Does this plan edit tiles from a full-view anchor? Schema 2 always; schema 3 with anchor: full_view."""
+    return schema == 2 or schema >= 3 and params.get('anchor') == 'full_view'
+
+
+def structure_classes(region, plants, bed):
+    """Per-pixel alignment classes inside the edit region (see module docstring)."""
+    near = cv2.distanceTransform((~plants).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_PRECISE)
+    classes = np.full(region.shape, LENIENT, np.uint8)
+    classes[bed & (near > OPEN_GROUND_CLEARANCE_PX)] = OPEN_GROUND
+    classes[~bed & (near > HARDSCAPE_CLEARANCE_PX)] = STRICT
+    classes[~region] = OUTSIDE
+    return classes
+
+
+def prompt(job, rows, records, mulch, schema=PLAN_SCHEMA, anchor=True):
     tile = job['kind'] == 'tile'
     fields = dict(hardscape=records.get('hardscape') or HARDSCAPE, materials=records.get('materials') or MATERIALS,
                   ground=MULCH if mulch else NO_MULCH)
     if schema == 1:
         text = PREAMBLE_V1.format(part=TILE_PART if tile else '', reference=TILE_REFERENCE if tile else '', **fields)
+    elif tile and not anchor:
+        text = TILE_PREAMBLE_V3.format(**fields)
     else:
         text = (TILE_PREAMBLE if tile else FULL_PREAMBLE).format(**fields)
     order = []
@@ -206,55 +251,65 @@ def derive(review_path, records_path, params, schema=PLAN_SCHEMA):
     if schema >= 2:
         kept['seam_feather_px'] = int(params['seam_feather_px'])
         require(4 <= kept['seam_feather_px'] <= 48, 'Seam feather must be 4-48 px')
+    if schema >= 3:
+        kept['anchor'] = params['anchor']
+        require(kept['anchor'] in ANCHORS, 'Scene edit anchor is none or full_view')
+    anchor = anchored(schema, kept)
     region = edit_region(alpha, transition, margin)
     boxes, ramps = tiles(region, tile, overlap)
-    jobs = [{'id': 'full', 'kind': 'full_view', 'box': [0, 0, w, h]}]
+    jobs = [{'id': 'full', 'kind': 'full_view', 'box': [0, 0, w, h]}] if schema < 3 or anchor else []
     jobs += [{'id': f'tile-{i + 1:02d}', 'kind': 'tile', 'box': b} for i, b in enumerate(boxes)]
     for job in jobs:
         job['inventory'] = inventory(ids, visible, projected, job['box'])
-    check_records(records, sorted({r['species'] for r in jobs[0]['inventory']}))
+    check_records(records, sorted({r['species'] for r in inventory(ids, visible, projected, [0, 0, w, h])}))
     for job in jobs:
-        job['prompt_text'] = prompt(job, job['inventory'], records, layers['bed_on'], schema)
+        job['prompt_text'] = prompt(job, job['inventory'], records, layers['bed_on'], schema, anchor)
+    classes = structure_classes(region, layers['plants'], layers['bed']) if schema >= 3 else None
     return {'review': record(review_path), 'records': record(records_path), 'composite': record(composite),
             'cleaned_photo': record(checked(proof['cleaned_photo'], fp.parent)), 'camera_id': view['camera_id'],
             'handoff': record(hp), 'dimensions': [w, h], 'baseline_status': result['status'],
             'params': kept,
-            'ramps_px': ramps, 'jobs': jobs, 'baseline_result': result}, region
+            'ramps_px': ramps, 'jobs': jobs, 'baseline_result': result, 'classes': classes}, region
 
 
-def target_name(schema, job):
-    """Planned crop file: the edit target, except schema 2 tiles, whose target is the anchor crop (geometry only here)."""
-    return 'geometry' if schema >= 2 and job['kind'] == 'tile' else 'input'
+def target_name(schema, params, job):
+    """Planned crop file: the edit target, except anchored tiles, whose target is the anchor crop (geometry only here)."""
+    return 'geometry' if anchored(schema, params) and job['kind'] == 'tile' else 'input'
 
 
 def prepare(review, records, out, schema=PLAN_SCHEMA, **overrides):
-    require(schema in (1, 2), 'Unknown scene edit plan schema')
-    params = {**(DEFAULTS if schema == 1 else DEFAULTS_V2), **{k: v for k, v in overrides.items() if v is not None}}
+    require(schema in SCHEMAS, 'Unknown scene edit plan schema')
+    params = {**{1: DEFAULTS, 2: DEFAULTS_V2, 3: DEFAULTS_V3}[schema], **{k: v for k, v in overrides.items() if v is not None}}
     derived, region = derive(review, records, params, schema)
     out = Path(out).resolve(); require(not out.exists(), 'Use a new scene edit plan directory'); out.mkdir(parents=True)
     rgb, _ = load(derived['composite']['path'])
     rgb8 = rgb if rgb.dtype == np.uint8 else np.rint(rgb / 257).astype(np.uint8)
     Image.fromarray(region.astype(np.uint8) * 255).save(out / 'region.png')
     Image.fromarray(np.rint(region_weight(region, params['feather_px']) * 255).astype(np.uint8)).save(out / 'region-weight.png')
+    extra = {}
+    if derived['classes'] is not None:
+        Image.fromarray(derived['classes']).save(out / 'structure.png')
+        extra['structure'] = record(out / 'structure.png')
     jobs = []
     for job in derived['jobs']:
         d = out / 'jobs' / job['id']; d.mkdir(parents=True)
         x0, y0, x1, y1 = job['box']
-        name = target_name(schema, job)
+        name = target_name(schema, derived['params'], job)
         save(d / f'{name}.png', rgb8[y0:y1, x0:x1])
         (d / 'prompt.txt').write_text(job['prompt_text'], encoding='utf-8')
         jobs.append({k: v for k, v in job.items() if k != 'prompt_text'} |
                     {name: record(d / f'{name}.png'), 'prompt': record(d / 'prompt.txt')})
-    plan = {'schema_version': schema, 'kind': KIND, **{k: v for k, v in derived.items() if k not in ('jobs', 'baseline_result')},
+    plan = {'schema_version': schema, 'kind': KIND, **{k: v for k, v in derived.items() if k not in ('jobs', 'baseline_result', 'classes')},
             'required_model': MODEL, 'image_tools': list(IMAGE_TOOLS), 'max_attempts': MAX_ATTEMPTS,
-            'region': record(out / 'region.png'), 'region_weight_preview': record(out / 'region-weight.png'), 'jobs': jobs}
+            'region': record(out / 'region.png'), 'region_weight_preview': record(out / 'region-weight.png'), **extra, 'jobs': jobs}
     (out / 'plan.json').write_text(json.dumps(plan, indent=2), encoding='utf-8')
     return plan
 
 
 def validate(plan, base):
-    """Re-derive the frozen plan; returns (plan, region, composite, cleaned photo, previous composite guard result)."""
-    require(plan.get('kind') == KIND and plan.get('schema_version') in (1, 2), 'Frozen scene edit plan required')
+    """Re-derive the frozen plan; returns (plan, region, composite, cleaned photo, previous composite guard result).
+    The structure classes (schema 3) are re-derived and checked too; read them with structure()."""
+    require(plan.get('kind') == KIND and plan.get('schema_version') in SCHEMAS, 'Frozen scene edit plan required')
     require(plan.get('required_model') == MODEL and plan.get('max_attempts') == MAX_ATTEMPTS, 'Scene edit model contract changed')
     schema = plan['schema_version']
     derived, region = derive(checked(plan['review'], base), checked(plan['records'], base), plan['params'], schema)
@@ -263,6 +318,9 @@ def validate(plan, base):
     require(len(derived['jobs']) == len(plan['jobs']), 'Scene edit job layout differs')
     with Image.open(checked(plan['region'], base)) as im:
         require(np.array_equal(np.array(im) > 0, region), 'Scene edit region differs')
+    if schema >= 3:
+        with Image.open(checked(plan['structure'], base)) as im:
+            require(np.array_equal(np.array(im), derived['classes']), 'Scene edit structure classes differ')
     composite, _ = load(checked(plan['composite'], base))
     cleaned, _ = load(checked(plan['cleaned_photo'], base))
     rgb8 = composite if composite.dtype == np.uint8 else np.rint(composite / 257).astype(np.uint8)
@@ -272,7 +330,7 @@ def validate(plan, base):
         prompt_path = checked(job['prompt'], base)
         require(prompt_path.read_text(encoding='utf-8') == want['prompt_text'], f"Planned prompt changed: {job['id']}")
         x0, y0, x1, y1 = job['box']
-        target, _ = load(checked(job[target_name(schema, job)], base))
+        target, _ = load(checked(job[target_name(schema, plan['params'], job)], base))
         require(np.array_equal(target, rgb8[y0:y1, x0:x1]), f"Planned crop differs from the composite crop: {job['id']}")
     return plan, region, composite, cleaned, derived['baseline_result']
 
@@ -291,11 +349,18 @@ def resized(raw_path, box):
     return np.array(Image.fromarray(rgb).resize((w, h), Image.LANCZOS))
 
 
+def structure(plan, base):
+    """The frozen structure classes of a validated schema 3 plan."""
+    with Image.open(checked(plan['structure'], base)) as im:
+        return np.array(im)
+
+
 def reference(plan_path, full_raw, job_id, out):
-    """Crop of the upscaled full-view result at a tile box: the tile's edit target (schema 2 anchor crop) or,
-    for schema 1 plans, its style/consistency reference."""
+    """Crop of the upscaled full-view result at a tile box: the tile's edit target in the anchored route (schema 2,
+    or schema 3 with anchor: full_view) or, for schema 1 plans, its style/consistency reference."""
     pp = Path(plan_path).resolve(); plan = read(pp)
-    full = next(j for j in plan['jobs'] if j['kind'] == 'full_view')
+    full = next((j for j in plan['jobs'] if j['kind'] == 'full_view'), None)
+    require(full is not None, 'This plan has no full-view anchor; edit jobs/tile-NN/input.png (the composite crop) directly')
     job = next((j for j in plan['jobs'] if j['id'] == job_id and j['kind'] == 'tile'), None)
     require(job is not None, 'Unknown tile job')
     image = reference_pixels(full_raw, full['box'], job['box'])
@@ -321,14 +386,15 @@ if __name__ == '__main__':
     a.add_argument('--tile', type=int, nargs=2, metavar=('W', 'H')); a.add_argument('--overlap', type=float)
     a.add_argument('--margin', type=int); a.add_argument('--feather', type=int)
     a.add_argument('--seam-feather', type=int, help='Feather at tile ownership boundaries (default 20 px)')
-    for name, text in (('tile-input', "Write a tile's edit target: its crop of the upscaled accepted full-view result"),
+    a.add_argument('--anchor', choices=ANCHORS, help='none (default): tiles edit the composite crop; full_view: anchored tiles')
+    for name, text in (('tile-input', "Anchored route only: write a tile's edit target, its crop of the upscaled full-view result"),
                        ('reference', 'Alias of tile-input (for schema 1 plans, the tile style reference)')):
         a = sub.add_parser(name, help=text)
         a.add_argument('plan'); a.add_argument('--full-raw', required=True); a.add_argument('--job', required=True); a.add_argument('--out', required=True)
     a = p.parse_args()
     if a.command == 'plan':
         result = prepare(a.finish_review, a.records, a.out, tile=a.tile, overlap=a.overlap, margin_px=a.margin, feather_px=a.feather,
-                         seam_feather_px=a.seam_feather)
+                         seam_feather_px=a.seam_feather, anchor=a.anchor)
         result = {'plan': str(Path(a.out).resolve() / 'plan.json'), 'jobs': [{'id': j['id'], 'box': j['box'],
                   'planned_crop': (j.get('input') or j['geometry'])['path'],
                   'prompt': j['prompt']['path'], 'plants': len(j['inventory'])} for j in result['jobs']]}
