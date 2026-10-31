@@ -6,6 +6,11 @@ one full-view job plus overlapping native-resolution tiles over the region, and 
 inventory (species, IDs, positions as % of the crop, projected pixel sizes, edge fragments included) is computed
 from the actual renderer object IDs. Plant descriptions and bloom come from the agent's plant records file.
 Deterministic: validate() re-derives every field. No image generation or recognition happens here.
+
+Plan schema 2 (current): the full-view edit is the anchor. Each tile edits the matching crop of the upscaled,
+accepted full-view result (`tile-input`) and only adds native-resolution detail; the planned composite crop
+(`geometry.png`) is a secondary geometry reference. Schema 1 plans (tiles edited from the composite crop, with
+the full-view crop as style reference) stay verifiable.
 """
 import argparse
 import json
@@ -23,9 +28,12 @@ KIND = 'scene_photographic_edit_plan'
 MODEL = {'agent_model': 'gpt-6-astra', 'reasoning_effort': 'high'}
 IMAGE_TOOLS = ('image_gen.imagegen', 'image_gen__imagegen')
 MAX_ATTEMPTS = 2
+PLAN_SCHEMA = 2
 DEFAULTS = {'tile': [1152, 1024], 'overlap': .3, 'margin_px': 24, 'feather_px': 24}
+DEFAULTS_V2 = {**DEFAULTS, 'seam_feather_px': 20}
 
-PREAMBLE = (
+# Schema 1 prompts (kept so schema 1 plans re-derive exactly).
+PREAMBLE_V1 = (
     "Use case: sketch-to-render. Edit target: the supplied image{part}, an existing designed garden in a real site photograph. "
     "Make this exact view an ordinary real photograph, with botanically authentic living plants. Keep the same camera, crop, "
     "perspective, lighting, every plant identity, root position, presentation size, extent and overlap. No plant may move, appear, "
@@ -39,6 +47,33 @@ PREAMBLE = (
 TILE_PART = ' (one native-resolution tile of a larger view)'
 TILE_REFERENCE = (" The second supplied image is the matching crop of the already-edited whole view: match its light, colour, "
                   "materials and plant rendering, while following this tile's own layout and finer detail.")
+
+# Schema 2 prompts. They hold only what makes a real failure (same camera, plants rooted in beds, hardscape fixed,
+# no new structures, each plant recognizably its designed species and form) and allow natural movement and fuller
+# foliage. Tiles are detail passes over the anchored full-view result and must not move anything.
+FULL_PREAMBLE = (
+    "Use case: photo edit. Edit target: the supplied image, an existing designed garden in a real site photograph. "
+    "Make this exact view an ordinary real photograph, with botanically authentic living plants. Keep the same camera, crop, "
+    "perspective and lighting. Keep {hardscape} exactly in place with identical geometry: no added, removed, moved or doubled "
+    "slab joints, edges, steps, walls, gravel strips or structures; {materials}. {ground} Every plant stays rooted in its bed, "
+    "never growing out of concrete, paving, steps or walls; foliage may naturally overhang an edge. No new pots, steps, paving, "
+    "structures or text, and no new plants in empty bed ground. Keep photographic areas outside the landscape unchanged. "
+    "Each designed plant stays clearly its listed species and form, at about its listed position and size; natural movement, "
+    "fuller foliage and a natural outline are fine. The following inventory lists every visible plant, including edge "
+    "fragments: x and y are percentages from the top left, width and height are projected visible pixel sizes in the supplied "
+    "image, not physical centimetres. Do not complete clipped plants or expose occluded plants. No invented hybrid foliage. "
+    "Every flowering plant is in full bloom, true to its cultivar.")
+TILE_PREAMBLE = (
+    "Use case: photo detail. Edit target: the first supplied image, one native-resolution tile of an already-edited "
+    "photograph of a designed garden, shown upscaled and soft. Add native-resolution photographic detail: crisp leaf and "
+    "flower anatomy, bark and mulch grain, concrete and stone texture, natural light and grain. Do not change any shape, "
+    "outline, position, size or species: every plant, leaf mass, flower, shadow and hardscape edge stays exactly where it is "
+    "in the first image, so this tile lines up pixel for pixel with its neighbours. Do not add, remove or move plants, "
+    "flowers, joints, edges, steps or structures, and keep the colours and light of the first image. The second supplied "
+    "image is the planned 3D composite of the same crop: use it only to confirm the {hardscape} geometry and which plant is "
+    "which, never to move anything toward it or copy its rendered look. {ground} Plants stay rooted in beds, never in "
+    "concrete, paving or steps. For identification only, the plants in this tile (positions are percentages of the tile "
+    "from the top left; sizes are approximate pixels):")
 MULCH = 'Ground inside beds is shredded bark mulch.'
 NO_MULCH = 'Ground inside beds keeps its existing designed material.'
 HARDSCAPE = 'concrete, steps, walls, planters, edging and the house'
@@ -126,11 +161,14 @@ def species_line(name, record_, rows):
     return f"{name} ({record_['common_name']}; {record_['description']}); flowers: {flowers}. Instances: {instances}"
 
 
-def prompt(job, rows, records, mulch):
+def prompt(job, rows, records, mulch, schema=PLAN_SCHEMA):
     tile = job['kind'] == 'tile'
-    text = PREAMBLE.format(part=TILE_PART if tile else '', hardscape=records.get('hardscape') or HARDSCAPE,
-                           materials=records.get('materials') or MATERIALS, ground=MULCH if mulch else NO_MULCH,
-                           reference=TILE_REFERENCE if tile else '')
+    fields = dict(hardscape=records.get('hardscape') or HARDSCAPE, materials=records.get('materials') or MATERIALS,
+                  ground=MULCH if mulch else NO_MULCH)
+    if schema == 1:
+        text = PREAMBLE_V1.format(part=TILE_PART if tile else '', reference=TILE_REFERENCE if tile else '', **fields)
+    else:
+        text = (TILE_PREAMBLE if tile else FULL_PREAMBLE).format(**fields)
     order = []
     for r in rows:
         if r['species'] not in order:
@@ -141,7 +179,7 @@ def prompt(job, rows, records, mulch):
     return text + '\n' + '\n'.join(lines) + '\n'
 
 
-def derive(review_path, records_path, params):
+def derive(review_path, records_path, params, schema=PLAN_SCHEMA):
     """Recompute region, jobs, inventories and prompts from verified evidence."""
     from photo_finish import review_context
     review_path, records_path = Path(review_path).resolve(), Path(records_path).resolve()
@@ -164,6 +202,10 @@ def derive(review_path, records_path, params):
     margin, feather = int(params['margin_px']), int(params['feather_px'])
     require(len(tile) == 2 and all(v >= 8 for v in tile) and .3 <= overlap < .5, 'Tiles need >= 8 px and 30-50% overlap')
     require(0 <= margin <= 96 and 1 <= feather <= 96, 'Bounded edit-region margin/feather required')
+    kept = {'tile': tile, 'overlap': overlap, 'margin_px': margin, 'feather_px': feather}
+    if schema >= 2:
+        kept['seam_feather_px'] = int(params['seam_feather_px'])
+        require(4 <= kept['seam_feather_px'] <= 48, 'Seam feather must be 4-48 px')
     region = edit_region(alpha, transition, margin)
     boxes, ramps = tiles(region, tile, overlap)
     jobs = [{'id': 'full', 'kind': 'full_view', 'box': [0, 0, w, h]}]
@@ -172,17 +214,23 @@ def derive(review_path, records_path, params):
         job['inventory'] = inventory(ids, visible, projected, job['box'])
     check_records(records, sorted({r['species'] for r in jobs[0]['inventory']}))
     for job in jobs:
-        job['prompt_text'] = prompt(job, job['inventory'], records, layers['bed_on'])
+        job['prompt_text'] = prompt(job, job['inventory'], records, layers['bed_on'], schema)
     return {'review': record(review_path), 'records': record(records_path), 'composite': record(composite),
             'cleaned_photo': record(checked(proof['cleaned_photo'], fp.parent)), 'camera_id': view['camera_id'],
             'handoff': record(hp), 'dimensions': [w, h], 'baseline_status': result['status'],
-            'params': {'tile': tile, 'overlap': overlap, 'margin_px': margin, 'feather_px': feather},
+            'params': kept,
             'ramps_px': ramps, 'jobs': jobs, 'baseline_result': result}, region
 
 
-def prepare(review, records, out, **overrides):
-    params = {**DEFAULTS, **{k: v for k, v in overrides.items() if v is not None}}
-    derived, region = derive(review, records, params)
+def target_name(schema, job):
+    """Planned crop file: the edit target, except schema 2 tiles, whose target is the anchor crop (geometry only here)."""
+    return 'geometry' if schema >= 2 and job['kind'] == 'tile' else 'input'
+
+
+def prepare(review, records, out, schema=PLAN_SCHEMA, **overrides):
+    require(schema in (1, 2), 'Unknown scene edit plan schema')
+    params = {**(DEFAULTS if schema == 1 else DEFAULTS_V2), **{k: v for k, v in overrides.items() if v is not None}}
+    derived, region = derive(review, records, params, schema)
     out = Path(out).resolve(); require(not out.exists(), 'Use a new scene edit plan directory'); out.mkdir(parents=True)
     rgb, _ = load(derived['composite']['path'])
     rgb8 = rgb if rgb.dtype == np.uint8 else np.rint(rgb / 257).astype(np.uint8)
@@ -192,11 +240,12 @@ def prepare(review, records, out, **overrides):
     for job in derived['jobs']:
         d = out / 'jobs' / job['id']; d.mkdir(parents=True)
         x0, y0, x1, y1 = job['box']
-        save(d / 'input.png', rgb8[y0:y1, x0:x1])
+        name = target_name(schema, job)
+        save(d / f'{name}.png', rgb8[y0:y1, x0:x1])
         (d / 'prompt.txt').write_text(job['prompt_text'], encoding='utf-8')
         jobs.append({k: v for k, v in job.items() if k != 'prompt_text'} |
-                    {'input': record(d / 'input.png'), 'prompt': record(d / 'prompt.txt')})
-    plan = {'schema_version': 1, 'kind': KIND, **{k: v for k, v in derived.items() if k not in ('jobs', 'baseline_result')},
+                    {name: record(d / f'{name}.png'), 'prompt': record(d / 'prompt.txt')})
+    plan = {'schema_version': schema, 'kind': KIND, **{k: v for k, v in derived.items() if k not in ('jobs', 'baseline_result')},
             'required_model': MODEL, 'image_tools': list(IMAGE_TOOLS), 'max_attempts': MAX_ATTEMPTS,
             'region': record(out / 'region.png'), 'region_weight_preview': record(out / 'region-weight.png'), 'jobs': jobs}
     (out / 'plan.json').write_text(json.dumps(plan, indent=2), encoding='utf-8')
@@ -205,9 +254,10 @@ def prepare(review, records, out, **overrides):
 
 def validate(plan, base):
     """Re-derive the frozen plan; returns (plan, region, composite, cleaned photo, previous composite guard result)."""
-    require(plan.get('kind') == KIND and plan.get('schema_version') == 1, 'Frozen scene edit plan required')
+    require(plan.get('kind') == KIND and plan.get('schema_version') in (1, 2), 'Frozen scene edit plan required')
     require(plan.get('required_model') == MODEL and plan.get('max_attempts') == MAX_ATTEMPTS, 'Scene edit model contract changed')
-    derived, region = derive(checked(plan['review'], base), checked(plan['records'], base), plan['params'])
+    schema = plan['schema_version']
+    derived, region = derive(checked(plan['review'], base), checked(plan['records'], base), plan['params'], schema)
     for key in ('review', 'records', 'composite', 'cleaned_photo', 'camera_id', 'handoff', 'dimensions', 'params', 'ramps_px'):
         require(derived[key] == plan[key], 'Scene edit plan differs from its evidence: ' + key)
     require(len(derived['jobs']) == len(plan['jobs']), 'Scene edit job layout differs')
@@ -222,8 +272,8 @@ def validate(plan, base):
         prompt_path = checked(job['prompt'], base)
         require(prompt_path.read_text(encoding='utf-8') == want['prompt_text'], f"Planned prompt changed: {job['id']}")
         x0, y0, x1, y1 = job['box']
-        target, _ = load(checked(job['input'], base))
-        require(np.array_equal(target, rgb8[y0:y1, x0:x1]), f"Edit target differs from the composite crop: {job['id']}")
+        target, _ = load(checked(job[target_name(schema, job)], base))
+        require(np.array_equal(target, rgb8[y0:y1, x0:x1]), f"Planned crop differs from the composite crop: {job['id']}")
     return plan, region, composite, cleaned, derived['baseline_result']
 
 
@@ -242,7 +292,8 @@ def resized(raw_path, box):
 
 
 def reference(plan_path, full_raw, job_id, out):
-    """Crop of the resized full-view result at a tile box: the tile's style/consistency reference."""
+    """Crop of the upscaled full-view result at a tile box: the tile's edit target (schema 2 anchor crop) or,
+    for schema 1 plans, its style/consistency reference."""
     pp = Path(plan_path).resolve(); plan = read(pp)
     full = next(j for j in plan['jobs'] if j['kind'] == 'full_view')
     job = next((j for j in plan['jobs'] if j['id'] == job_id and j['kind'] == 'tile'), None)
@@ -250,10 +301,12 @@ def reference(plan_path, full_raw, job_id, out):
     image = reference_pixels(full_raw, full['box'], job['box'])
     out = Path(out).resolve(); require(not out.exists(), 'Use a new reference path'); out.parent.mkdir(parents=True, exist_ok=True)
     save(out, image)
-    return {'job': job_id, 'reference': record(out), 'from_full_raw': record(full_raw)}
+    key = 'input' if plan.get('schema_version', 1) >= 2 else 'reference'
+    return {'job': job_id, key: record(out), 'from_full_raw': record(full_raw)}
 
 
 def reference_pixels(full_raw, full_box, box):
+    """Crop of the full-view result, upscaled (Lanczos) to the photo, at one tile box."""
     rgb = resized(full_raw, full_box)
     x0, y0, x1, y1 = box
     return rgb[y0:y1, x0:x1]
@@ -267,12 +320,17 @@ if __name__ == '__main__':
     a.add_argument('--out', required=True)
     a.add_argument('--tile', type=int, nargs=2, metavar=('W', 'H')); a.add_argument('--overlap', type=float)
     a.add_argument('--margin', type=int); a.add_argument('--feather', type=int)
-    a = sub.add_parser('reference', help='Write the full-view result crop for one tile')
-    a.add_argument('plan'); a.add_argument('--full-raw', required=True); a.add_argument('--job', required=True); a.add_argument('--out', required=True)
+    a.add_argument('--seam-feather', type=int, help='Feather at tile ownership boundaries (default 20 px)')
+    for name, text in (('tile-input', "Write a tile's edit target: its crop of the upscaled accepted full-view result"),
+                       ('reference', 'Alias of tile-input (for schema 1 plans, the tile style reference)')):
+        a = sub.add_parser(name, help=text)
+        a.add_argument('plan'); a.add_argument('--full-raw', required=True); a.add_argument('--job', required=True); a.add_argument('--out', required=True)
     a = p.parse_args()
     if a.command == 'plan':
-        result = prepare(a.finish_review, a.records, a.out, tile=a.tile, overlap=a.overlap, margin_px=a.margin, feather_px=a.feather)
-        result = {'plan': str(Path(a.out).resolve() / 'plan.json'), 'jobs': [{'id': j['id'], 'box': j['box'], 'input': j['input']['path'],
+        result = prepare(a.finish_review, a.records, a.out, tile=a.tile, overlap=a.overlap, margin_px=a.margin, feather_px=a.feather,
+                         seam_feather_px=a.seam_feather)
+        result = {'plan': str(Path(a.out).resolve() / 'plan.json'), 'jobs': [{'id': j['id'], 'box': j['box'],
+                  'planned_crop': (j.get('input') or j['geometry'])['path'],
                   'prompt': j['prompt']['path'], 'plants': len(j['inventory'])} for j in result['jobs']]}
     else:
         result = reference(a.plan, a.full_raw, a.job, a.out)

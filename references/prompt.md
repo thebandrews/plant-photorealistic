@@ -2,7 +2,7 @@
 
 ## Scene photographic edit (default)
 
-`scene_edit_plan.py` writes these prompts: the fixed A1 preamble plus one inventory line per species, computed from renderer IDs and the plant records. Use them exactly for attempt 1. A second attempt keeps the planned prompt and appends a `SECOND ATTEMPT:` correction written after inspecting attempt 1, naming the plant, its correct leaf/flower form and the extents, crowns, roots and hardscape edges to keep, and it edits the original input again. See [scene edit](scene-edit.md).
+`scene_edit_plan.py` writes these prompts, each with one inventory line per species computed from renderer IDs and the plant records. The full-view (anchor) prompt keeps the camera, hardscape geometry, plants rooted in beds, no new structures and each plant's species and form, and it allows natural movement and fuller foliage. Tile prompts only add native-resolution detail to the anchor crop, without moving any outline. Use them exactly for attempt 1. A second attempt keeps the planned prompt and appends a `SECOND ATTEMPT:` correction written after inspecting attempt 1. The correction names the plant, its correct leaf and flower form, and the roots and hardscape edges to keep; for a tile, it also asks to keep every outline exactly as in the first image. Attempt 2 edits the original input again. See [scene edit](scene-edit.md).
 
 ## Frozen image-interior route
 
