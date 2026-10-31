@@ -21,6 +21,11 @@ python scripts/photo_finish.py preview FINISH_PLAN.json --cleanup-raw CLEANUP_RA
 # Generate a bounded ground-transition edit of that preview, then:
 python scripts/photo_finish.py compose FINISH_PLAN.json --cleanup-raw CLEANUP_RAW.png --transition-raw TRANSITION_RAW.png --out FINAL_DIR
 python scripts/appearance_guard.py FINAL_REVIEW.json
+# Default scene photographic edit (gpt-6-astra, high reasoning, built-in image tool); see references/scene-edit.md
+python scripts/scene_edit_plan.py plan --finish-review FINAL_REVIEW.json --records RECORDS.json --out SCENE_DIR
+python scripts/scene_edit_plan.py reference SCENE_DIR/plan.json --full-raw FULL_RAW.png --job tile-01 --out REF.png
+python scripts/scene_edit_compose.py compose SCENE_DIR/plan.json --attempts ATTEMPTS.json --out SCENE_OUT
+python scripts/appearance_guard.py SCENE_REVIEW.json
 python -m unittest discover -s scripts -p "test_*.py" -v
 ```
 

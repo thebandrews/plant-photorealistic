@@ -1,5 +1,11 @@
 # Image appearance and cleanup prompts
 
+## Scene photographic edit (default)
+
+`scene_edit_plan.py` writes these prompts: the fixed A1 preamble plus one inventory line per species, computed from renderer IDs and the plant records. Use them exactly for attempt 1. A second attempt keeps the planned prompt and appends a `SECOND ATTEMPT:` correction written after inspecting attempt 1, naming the plant, its correct leaf/flower form and the extents, crowns, roots and hardscape edges to keep, and it edits the original input again. See [scene edit](scene-edit.md).
+
+## Frozen image-interior route
+
 The first template below is only for the frozen image-interior route. It does not restrict the separate native branch/leaf geometry refinement route in [finishing](finishing.md).
 
 Use this route for the landscape foreground stage when image-space refinement is useful. Use native botanical refinement when fuller foliage or different branch/leaf geometry is needed; the frozen image-interior route cannot fill a crown. First inspect the validated render and freeze its appearance plan. Use one view or frozen native crop per built-in image-generation call. This stage does not complete the skill: subsequently composite the checked landscape over the original site photograph using the photo-integration workflow. Never generate a replacement house or neighborhood.
