@@ -285,6 +285,11 @@ def verify(proof, base):
 
 
 def check_review(data, base):
+    return review_context(data, base)[0]
+
+
+def review_context(data, base):
+    """Verify a schema 4 photo_finish review; also return its plan, reconstruction context and proof."""
     fp = checked(data['finish_proof'], base); proof = read(fp)
     plan, ctx = verify(proof, fp.parent); hp, view, _, _, alpha, cleanup, transition, stage, layers = ctx
     require(checked(data['handoff'], base) == hp and data['camera_id'] == view['camera_id'] and
@@ -320,7 +325,7 @@ def check_review(data, base):
             'bed_ground': layers.get('bed_ground_info', {'status': 'off'}),
             'landscape_evidence_counts': stage['evidence_counts'], 'scope': 'Cleaned original photo with checked landscape and reviewed integration',
             'upstream_handoff_kind': read(hp)['kind'], 'upstream_certification': read(hp).get('certification', 'inherited_strict_validation'), 'upstream_production_status': read(hp).get('production_status'), 'inherited_assumptions': read(hp).get('assumptions', []),
-            'limitation': 'Native evidence and reproducible operations do not independently establish semantic realism; finishing never upgrades upstream source/camera certification'}
+            'limitation': 'Native evidence and reproducible operations do not independently establish semantic realism; finishing never upgrades upstream source/camera certification'}, plan, ctx, proof
 
 
 if __name__ == '__main__':

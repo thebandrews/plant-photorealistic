@@ -99,7 +99,7 @@ New plans set `surface_realism_review: true` and also require `hardscape_surface
 
 Inspect the entire final frame, not just listed masks: missed people, tools, detached shadows, ghost silhouettes and repeated/invented background patches fail review. Inspect source/cleaned/native/final comparisons, high-contrast foliage edges and long rendered-ground/photo boundaries. Check species habit, branch/leaf realism, planting positions, foreground occlusion, wall/path geometry, light direction and contacts across every camera. Automated reconstruction alone cannot pass these semantic judgments.
 
-Run `appearance_guard.py FINAL_REVIEW.json`. New delivery completion requires accepted schema 4 `photo_finish`. Report unresolved cleanup/seams/anatomy honestly and correct the affected region; legacy binary acceptance does not waive them. Keep all client photos, masks, native assets and run logs outside the reusable public skill repository.
+Run `appearance_guard.py FINAL_REVIEW.json`. New delivery completion requires accepted schema 4 `photo_finish`, followed by the default [scene photographic edit](scene-edit.md) and its schema 4 `scene_photographic_edit` review (an accepted edit, or a disclosed fallback to this composite). Report unresolved cleanup/seams/anatomy honestly and correct the affected region; legacy binary acceptance does not waive them. Keep all client photos, masks, native assets and run logs outside the reusable public skill repository.
 
 ## Completion with disclosed limitations
 

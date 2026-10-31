@@ -16,6 +16,8 @@ def check(data,base):
     if data.get('schema_version') == 4:
         if data.get('method') == 'native_botanical_refinement':
             from botanical_refinement import check_review
+        elif data.get('method') == 'scene_photographic_edit':
+            from scene_edit_compose import check_review
         else:
             require(data.get('method') == 'photo_finish', 'Unknown finishing review method')
             from photo_finish import check_review
