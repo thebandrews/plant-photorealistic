@@ -1,7 +1,8 @@
 """Compose built-in image-tool scene edits back into the finished photo, and check their review.
 
-Current route (plan schema 3, operation scene_edit_composite_tiles_seam_v3, anchor: none): each tile edited its
-native-resolution crop of the previous photo_finish composite. The base of the scene is that composite. Each
+Current route (plan schema 4 or 3, operation scene_edit_composite_tiles_seam_v3, anchor: none): each tile edited its
+native-resolution crop of the previous photo_finish composite (schema 4: with its planned labelled reference sheet of
+real species photos as the second image; every attempt records that sheet as its `reference`, byte-identical). The base of the scene is that composite. Each
 selected tile output is checked against the composite crop with a structure check (composite_structure_v1): plant
 and bed areas must keep the composite's coarse layout, open bed ground must not gain new structure, and hardscape
 away from plants must keep its lines and edges, more strictly. A tile that is not selected or fails the check is not
@@ -36,7 +37,7 @@ from scene_edit_plan import (IMAGE_TOOLS, LENIENT, MAX_ATTEMPTS, MODEL, OPEN_GRO
 OPERATION_V1 = 'scene_edit_raised_cosine_tiles_full_view_linear_v1'
 OPERATION_V2 = 'scene_edit_anchor_ownership_v2'
 OPERATION = 'scene_edit_composite_tiles_seam_v3'
-OPERATIONS = {1: OPERATION_V1, 2: OPERATION_V2, 3: OPERATION}
+OPERATIONS = {1: OPERATION_V1, 2: OPERATION_V2, 3: OPERATION, 4: OPERATION}
 # Schema 1 review check set (legacy reviews only).
 SCENE_CHECKS_V1 = ('species_fidelity', 'no_invented_or_hybrid_plants', 'plants_rooted_in_beds',
                    'hardscape_geometry_preserved', 'flowering_in_bloom', 'no_visible_seams', 'house_background_retained')
@@ -185,7 +186,16 @@ def check_attempts(plan, attempts, base):
                 check_attempt_v1(job, a, rows, full, base)
             elif job['kind'] == 'tile' and not with_anchor:
                 require(not a.get('anchor_from'), f'Tile {job_id} edits its composite crop; this plan has no anchor')
-                for key in ('input', 'reference'):
+                if schema >= 4:  # input = the composite crop exactly; reference = the planned reference sheet exactly
+                    sheet = job['references'].get('sheet')
+                    if sheet:
+                        require(a.get('reference') and checked(a['reference'], base) and
+                                a['reference']['sha256'] == sheet['sha256'],
+                                f"Tile {job_id} attempt {a['attempt']} must attach its planned reference sheet "
+                                f"(jobs/{job_id}/references.jpg) as its reference")
+                    else:
+                        require(not a.get('reference'), f'Tile {job_id} has no planned reference sheet; attach no reference')
+                for key in ('input',) if schema >= 4 else ('input', 'reference'):
                     if a.get(key):
                         got, _ = load(checked(a[key], base)); want, _ = load(checked(job['input'], base))
                         require(np.array_equal(got, want), f'Tile {key} is not the planned composite crop: {job_id}')

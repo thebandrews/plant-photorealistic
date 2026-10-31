@@ -1,7 +1,8 @@
-"""Synthetic scene photographic edit tests: layout, prompts, composite-input tiles, structure checks, ownership seams,
-metrics and review gates (plus the optional anchored route and legacy schemas).
+"""Synthetic scene photographic edit tests: layout, prompts, composite-input tiles, reference photo records and sheets,
+structure checks, ownership seams, metrics and review gates (plus the optional anchored route and legacy schemas).
 No recognition claims: every visual finding here is synthetic fixture truth."""
 import copy
+import os
 import unittest
 from pathlib import Path
 
@@ -16,21 +17,34 @@ import scene_edit_compose as sec
 from scene_edit_compose import (ALIGNMENT, BLOCKING_CHECKS, CHECK_SET, COMPOSITE_ALIGNMENT, OPERATION, OPERATION_V1,
                                 OPERATION_V2, SCENE_CHECKS_V1, alignment, composite_alignment, compose, label_weights,
                                 ownership, seam_path, seam_rows, verify)
-from scene_edit_plan import (LENIENT, OPEN_GROUND, STRICT, prepare, reference, structure_classes, tiles, validate,
+from scene_edit_plan import (LENIENT, OPEN_GROUND, REFERENCE_LINE, REFERENCE_SHEET_LONG_EDGE, STRICT, meaningful_species,
+                             prepare, reference, reference_sheet, structure_classes, tile_references, tiles, validate,
                              edit_region, region_weight, resized)
 from test_contract import save
 import test_finishing
 
-PARAMS = dict(tile=[16, 12], overlap=.3, margin_px=2, feather_px=2, seam_feather_px=4)
+PARAMS = dict(tile=[16, 12], overlap=.3, margin_px=2, feather_px=2, seam_feather_px=4, reference_min_px=4)
 PARAMS_V2 = PARAMS
 PARAMS_V1 = dict(tile=[16, 12], overlap=.3, margin_px=2, feather_px=2)
 RECORDS = {'species': {
     'Agave victoriae-reginae': {'common_name': 'Queen Victoria agave',
                                 'description': 'compact dense rosette of narrow stiff dark green leaves with white markings',
-                                'bloom_exempt': 'monocarpic agave; flowering ends the rosette'},
+                                'bloom_exempt': 'monocarpic agave; flowering ends the rosette',
+                                'reference_photos': [
+                                    {'path': 'refs/agave-species.png', 'source_page': 'https://example.org/garden/agave',
+                                     'image_url': 'https://example.org/garden/agave.jpg', 'accessed': '2026-10-31',
+                                     'identification': 'Synthetic botanical garden, Agave victoriae-reginae',
+                                     'cultivar_match': 'species', 'usage_note': 'Synthetic fixture photo.'}]},
     'Synthetic tiny cultivar': {'common_name': 'tiny daisy', 'description': 'low mound of small leaves',
                                 'flowers': 'many small white daisies with yellow centres'}}}
 ALL_PASS = dict.fromkeys(BLOCKING_CHECKS, 'pass')
+
+
+def write_reference_photos(base):
+    """Synthetic 'reference photos' next to the records (the scene work folder)."""
+    (base / 'refs').mkdir(exist_ok=True)
+    Image.fromarray(blocks_image((60, 40), 4, cell=5)).save(base / 'refs' / 'agave-species.png')
+    Image.fromarray(blocks_image((40, 60), 5, cell=5)).save(base / 'refs' / 'agave-exact.png')
 
 
 def text_of(path):
@@ -126,15 +140,16 @@ def leaf_scene(seed, jitter=0., size_jitter=0., where=None, texture=False, w=140
 
 
 class PlanFixture(unittest.TestCase):
-    schema = 3
+    schema = 4
     anchor = None
 
     def setUp(self):
         self.fin = test_finishing.PhotoFinishing(); self.fin.setUp(); self.addCleanup(self.fin.doCleanups)
         self.p = self.fin.p
         save(self.p / 'finish-review.json', self.fin.review)
+        write_reference_photos(self.p)
         save(self.p / 'records.json', RECORDS)
-        params = {1: PARAMS_V1, 2: PARAMS_V2, 3: dict(PARAMS, anchor=self.anchor)}[self.schema]
+        params = {1: PARAMS_V1, 2: PARAMS_V2, 3: dict(PARAMS, anchor=self.anchor), 4: dict(PARAMS, anchor=self.anchor)}[self.schema]
         self.plan = prepare(self.p / 'finish-review.json', self.p / 'records.json', self.p / 'scene', schema=self.schema, **params)
         self.tiles = [j for j in self.plan['jobs'] if j['kind'] == 'tile']
 
@@ -142,7 +157,7 @@ class PlanFixture(unittest.TestCase):
 class SceneEditPlan(PlanFixture):
     def test_layout_covers_region_with_thirty_percent_overlap(self):
         plan = self.plan
-        self.assertEqual(plan['schema_version'], 3); self.assertEqual(plan['params']['anchor'], 'none')
+        self.assertEqual(plan['schema_version'], 4); self.assertEqual(plan['params']['anchor'], 'none')
         self.assertTrue(all(j['kind'] == 'tile' for j in plan['jobs']))  # no full-view job without an anchor
         region = gray_of(plan['region']['path']) > 0
         covered = np.zeros_like(region)
@@ -183,7 +198,9 @@ class SceneEditPlan(PlanFixture):
         self.assertIn('never move, remove, replace or merge a plant', text)
         self.assertIn('natural leaf movement, fuller foliage and a natural outline are fine', text)
         self.assertIn('shredded bark mulch', text)
-        self.assertNotIn('already-edited', text); self.assertNotIn('second supplied image', text)
+        self.assertNotIn('already-edited', text)
+        self.assertIn('Edit target: the first supplied image, one native-resolution tile', text)
+        self.assertIn(REFERENCE_LINE, text)
         self.assertIn('flowers: many small white daisies with yellow centres. Instances: tiny at [22, 29]%, size [1, 1]px', text)
         agave = next(j for j in self.tiles if j['box'][:2] == [8, 6])
         self.assertIn("Agave victoriae-reginae (Queen Victoria agave; compact dense rosette", text_of(agave['prompt']['path']))
@@ -215,7 +232,8 @@ class SceneEditPlan(PlanFixture):
 
     def test_plan_is_deterministic_and_frozen(self):
         again = prepare(self.p / 'finish-review.json', self.p / 'records.json', self.p / 'scene-2', **PARAMS)
-        strip = lambda jobs: [{k: v for k, v in j.items() if k not in ('input', 'geometry', 'prompt')} for j in jobs]
+        strip = lambda jobs: [{k: v for k, v in j.items() if k not in ('input', 'geometry', 'prompt', 'references')} |
+                              {'refs': {k: v for k, v in j['references'].items() if k != 'sheet'}} for j in jobs]
         self.assertEqual(strip(again['jobs']), strip(self.plan['jobs']))
         validate(self.plan, self.p)
         tampered = copy.deepcopy(self.plan); tampered['jobs'][1]['inventory'][0]['size_px'] = [99, 99]
@@ -413,6 +431,8 @@ class SceneEditCompose(PlanFixture):
             Image.fromarray(self.tile_raw(job, tid in bad)).save(self.raw / f'{tid}-1{name}.png')
             (self.raw / f'{tid}-1.txt').write_text(text_of(job['prompt']['path']), encoding='utf-8')
             attempt = {'raw': f'{tid}-1{name}.png', 'prompt': f'{tid}-1.txt', 'inspection': 'Synthetic.'}
+            if job.get('references', {}).get('sheet'):
+                attempt['reference'] = '../' + Path(job['references']['sheet']['path']).relative_to(self.p).as_posix()
             if tid == self.tiles[0]['id']:  # the input may be recorded; it must be the planned composite crop
                 attempt['input'] = '../' + Path(job['input']['path']).relative_to(self.p).as_posix()
             manifest['jobs'][tid] = {'attempts': [attempt], 'selected': 1}
@@ -496,13 +516,23 @@ class SceneEditCompose(PlanFixture):
     def test_tile_attempts_edit_the_composite_crop(self):
         tile = self.tiles[0]['id']
         solid(self.raw / 'fake-input.png', (16, 12), [1, 2, 3])
-        for key in ('input', 'reference'):
-            manifest = copy.deepcopy(self.manifest); manifest['jobs'][tile]['attempts'][0][key] = 'fake-input.png'
-            with self.assertRaisesRegex(ValueError, f'{key} is not the planned composite crop'): self.compose_with(manifest, 'fake-' + key)
+        manifest = copy.deepcopy(self.manifest); manifest['jobs'][tile]['attempts'][0]['input'] = 'fake-input.png'
+        with self.assertRaisesRegex(ValueError, 'input is not the planned composite crop'): self.compose_with(manifest, 'fake-input')
         manifest = copy.deepcopy(self.manifest); manifest['jobs'][tile]['attempts'][0]['anchor_from'] = 1
         with self.assertRaisesRegex(ValueError, 'has no anchor'): self.compose_with(manifest, 'anchor-from')
         manifest = copy.deepcopy(self.manifest); manifest['jobs']['full'] = {'attempts': [], 'selected': None}
         with self.assertRaisesRegex(ValueError, 'every planned scene edit job'): self.compose_with(manifest, 'extra-full')
+
+    def test_attempts_attach_the_planned_reference_sheet(self):
+        tile = self.tiles[0]['id']
+        manifest = copy.deepcopy(self.manifest); del manifest['jobs'][tile]['attempts'][0]['reference']
+        with self.assertRaisesRegex(ValueError, 'must attach its planned reference sheet'): self.compose_with(manifest, 'no-ref')
+        Image.fromarray(blocks_image((768, 700), 3, cell=8)).save(self.raw / 'other-sheet.jpg')
+        for name, ref in (('wrong-sheet', 'other-sheet.jpg'), ('crop-as-ref', self.manifest['jobs'][tile]['attempts'][0]['input'])):
+            manifest = copy.deepcopy(self.manifest); manifest['jobs'][tile]['attempts'][0]['reference'] = ref
+            with self.assertRaisesRegex(ValueError, 'must attach its planned reference sheet'): self.compose_with(manifest, name)
+        attempt = self.proof['attempts']['jobs'][0]['attempts'][0]
+        self.assertEqual(attempt['reference']['sha256'], self.tiles[0]['references']['sheet']['sha256'])
 
     def test_review_accepts_with_recorded_defects(self):
         result = check(self.review, self.p)
@@ -616,18 +646,19 @@ class SceneEditCompose(PlanFixture):
         planned = text_of(job['prompt']['path'])
         (self.raw / 'changed.txt').write_text(planned + ' improvised', encoding='utf-8')
         (self.raw / 'second.txt').write_text(planned + '\nSECOND ATTEMPT: edit the ORIGINAL input; keep every agave rosette.', encoding='utf-8')
-        ok = {'raw': f'{tid}-1.png', 'prompt': f'{tid}-1.txt', 'inspection': 'x'}
+        ref = {k: v for k, v in self.manifest['jobs'][tid]['attempts'][0].items() if k == 'reference'}
+        ok = {**ref, 'raw': f'{tid}-1.png', 'prompt': f'{tid}-1.txt', 'inspection': 'x'}
         cases = [
             ([dict(ok, prompt='changed.txt')], 'exact planned prompt'),
-            ([{'raw': f'{tid}-1.png', 'prompt': f'{tid}-1.txt'}, {'raw': f'{tid}-1.png', 'prompt': 'second.txt'}], 'recorded inspection'),
-            ([ok, {'raw': f'{tid}-1.png', 'prompt': f'{tid}-1.txt'}], 'adds a correction'),
+            ([{**ref, 'raw': f'{tid}-1.png', 'prompt': f'{tid}-1.txt'}, {**ref, 'raw': f'{tid}-1.png', 'prompt': 'second.txt'}], 'recorded inspection'),
+            ([ok, {**ref, 'raw': f'{tid}-1.png', 'prompt': f'{tid}-1.txt'}], 'adds a correction'),
             ([ok] * 3, 'At most 2')]
         for attempts, message in cases:
             manifest = copy.deepcopy(self.manifest); manifest['jobs'][tid]['attempts'] = attempts
             with self.assertRaisesRegex(ValueError, message):
                 compose(self.p / 'scene/plan.json', self.rewrite(manifest, 'attempts-bad.json'), self.p / 'bad')
         manifest = copy.deepcopy(self.manifest)
-        manifest['jobs'][tid] = {'attempts': [dict(ok, inspection='Agave turned into pads.'), {'raw': f'{tid}-1.png', 'prompt': 'second.txt'}],
+        manifest['jobs'][tid] = {'attempts': [dict(ok, inspection='Agave turned into pads.'), {**ref, 'raw': f'{tid}-1.png', 'prompt': 'second.txt'}],
                                  'selected': 2}
         proof = compose(self.p / 'scene/plan.json', self.rewrite(manifest, 'two.json'), self.p / 'two')
         self.assertEqual(len(proof['attempts']['jobs'][0]['attempts']), 2)
@@ -657,8 +688,134 @@ class SceneEditCompose(PlanFixture):
         with self.assertRaisesRegex(ValueError, 'Missing or changed'): verify(self.proof, self.p)
 
 
+class SceneEditReferences(PlanFixture):
+    """Schema 4 reference photos: records, per-tile threshold selection, the labelled sheet, prompt and attempt binding."""
+
+    def records_with(self, change, name):
+        records = copy.deepcopy(RECORDS); change(records['species']['Agave victoriae-reginae'])
+        save(self.p / name, records); return self.p / name
+
+    def plan_with(self, change, name, **kw):
+        return prepare(self.p / 'finish-review.json', self.records_with(change, name + '.json'), self.p / name, **dict(PARAMS, **kw))
+
+    def test_plan_records_references_per_tile(self):
+        tile = self.tiles[0]
+        refs = tile['references']
+        self.assertEqual(refs['min_px'], 4)
+        self.assertEqual([e['species'] for e in refs['species']], ['Agave victoriae-reginae'])
+        entry = refs['species'][0]
+        self.assertEqual(entry['photo'], record(self.p / 'refs' / 'agave-species.png'))
+        self.assertEqual(entry['cultivar_match'], 'species'); self.assertEqual(entry['pixel_area'], 60)
+        self.assertEqual(entry['identification'], 'Synthetic botanical garden, Agave victoriae-reginae')
+        self.assertEqual(refs['omitted'], [{'species': 'Synthetic tiny cultivar', 'reason': 'below_threshold', 'pixel_area': 1}])
+        for job in self.tiles:
+            sheet = job['references']['sheet']
+            self.assertEqual(Path(sheet['path']), self.p / 'scene' / 'jobs' / job['id'] / 'references.jpg')
+            self.assertEqual(record(sheet['path']), sheet)
+            self.assertIn(REFERENCE_LINE, text_of(job['prompt']['path']))
+        validate(self.plan, self.p)
+
+    def test_threshold_selection(self):
+        rows = [{'species': 'A', 'visible_pixels': 100, 'size_px': [60, 40]},  # both sides must reach the threshold
+                {'species': 'A', 'visible_pixels': 3000, 'size_px': [50, 48]},
+                {'species': 'B', 'visible_pixels': 9000, 'size_px': [400, 30]},  # long thin edge sliver
+                {'species': 'C', 'visible_pixels': 5000, 'size_px': [90, 90]}]
+        big, small, area = meaningful_species(rows, 48)
+        self.assertEqual(big, ['C', 'A']); self.assertEqual(small, ['B']); self.assertEqual(area['A'], 3100)
+        records = {'species': {}}
+        rows = []
+        for k in range(11):
+            name = f'Species {k:02d}'
+            rows.append({'species': name, 'visible_pixels': 1000 * (k + 1), 'size_px': [64, 64]})
+            records['species'][name] = {'common_name': f'plant {k}', 'reference_photos': [
+                {'path': 'refs/agave-species.png', 'cultivar_match': 'species', 'identification': 'x', 'source_page': 'https://e.org/p',
+                 'image_url': 'https://e.org/i.jpg', 'accessed': '2026-10-31'},
+                {'path': 'refs/agave-exact.png', 'cultivar_match': 'exact', 'identification': 'y', 'source_page': 'https://e.org/q',
+                 'image_url': 'https://e.org/j.jpg', 'accessed': '2026-10-31'}]}
+        records['species']['Species 05'] = {'common_name': 'plant 5', 'reference_missing': 'no identified photo found'}
+        refs = tile_references(rows, records, self.p, 48)
+        shown = [e['species'] for e in refs['species']]
+        self.assertEqual(shown, ['Species 10', 'Species 09', 'Species 08', 'Species 07', 'Species 06',
+                                 'Species 04', 'Species 03', 'Species 02'])  # largest area first, at most 8
+        self.assertEqual([(o['species'], o['reason']) for o in refs['omitted']],
+                         [('Species 05', 'reference_missing'), ('Species 01', 'sheet_cap'), ('Species 00', 'sheet_cap')])
+        self.assertTrue(all(e['cultivar_match'] == 'exact' and e['photo'] == record(self.p / 'refs' / 'agave-exact.png')
+                            for e in refs['species']))  # the exact-cultivar photo is preferred
+        sheet = reference_sheet(refs['species'])
+        self.assertLessEqual(max(sheet.shape[:2]), REFERENCE_SHEET_LONG_EDGE)
+        self.assertEqual(sheet.shape[1], 3 * 512)
+        one = reference_sheet(refs['species'][:1])
+        self.assertEqual(one.shape[1], 768); self.assertLess(int(one.min()), 30)  # caption text drawn
+        # A higher threshold: the agave is small everywhere, so it needs no reference and gets no sheet.
+        plan = self.plan_with(lambda r: r.pop('reference_photos'), 'high-threshold', reference_min_px=20)
+        self.assertTrue(all(not j['references']['species'] and 'sheet' not in j['references'] for j in plan['jobs']))
+        self.assertNotIn(REFERENCE_LINE, text_of(plan['jobs'][0]['prompt']['path']))
+        validate(plan, self.p)
+
+    def test_reference_records_are_validated(self):
+        with self.assertRaisesRegex(ValueError, 'Give reference_photos'):
+            self.plan_with(lambda r: r.pop('reference_photos'), 'no-ref')
+        cases = {'cultivar': (lambda q: q.update(cultivar_match='close'), 'exact or species'),
+                 'date': (lambda q: q.update(accessed='last week'), 'access date'),
+                 'url': (lambda q: q.update(image_url='agave.jpg'), 'image URL'),
+                 'ident': (lambda q: q.pop('identification'), 'needs path'),
+                 'absolute': (lambda q: q.update(path=str(self.p / 'refs' / 'agave-species.png')), 'relative to RECORDS'),
+                 'outside': (lambda q: q.update(path='../outside.png'), 'under the scene work folder'),
+                 'notimage': (lambda q: q.update(path='records.json'), 'not a readable image')}
+        for name, (change, message) in cases.items():
+            with self.subTest(name), self.assertRaisesRegex(ValueError, message):
+                self.plan_with(lambda r: change(r['reference_photos'][0]), 'bad-' + name)
+        with self.assertRaisesRegex(ValueError, 'not both'):
+            self.plan_with(lambda r: r.update(reference_missing='none found'), 'both')
+        with self.assertRaisesRegex(ValueError, 'needs a reason'):
+            self.plan_with(lambda r: (r.pop('reference_photos'), r.update(reference_missing=' ')), 'blank-missing')
+        old = os.environ.get('PACIFICA_ASSETS_DIR'); os.environ['PACIFICA_ASSETS_DIR'] = str(self.p / 'refs')
+        try:
+            with self.assertRaisesRegex(ValueError, 'never keep them in the shared plant library'):
+                self.plan_with(lambda r: None, 'library')
+        finally:
+            if old is None: os.environ.pop('PACIFICA_ASSETS_DIR')
+            else: os.environ['PACIFICA_ASSETS_DIR'] = old
+
+    def test_reference_missing_is_allowed(self):
+        plan = self.plan_with(lambda r: (r.pop('reference_photos'), r.update(reference_missing='no identified photo found')), 'missing')
+        tile = plan['jobs'][0]
+        self.assertEqual(tile['references']['species'], []); self.assertNotIn('sheet', tile['references'])
+        self.assertIn({'species': 'Agave victoriae-reginae', 'reason': 'reference_missing', 'pixel_area': 60,
+                       'note': 'no identified photo found'}, tile['references']['omitted'])
+        text = text_of(tile['prompt']['path'])
+        self.assertNotIn(REFERENCE_LINE, text); self.assertIn('Edit target: the supplied image', text)
+        validate(plan, self.p)
+        raw = self.p / 'missing-raw'; raw.mkdir()
+        manifest = {'agent_model': 'gpt-6-astra', 'reasoning_effort': 'high', 'image_tool': 'image_gen.imagegen', 'jobs': {}}
+        for job in plan['jobs']:
+            solid(raw / f"{job['id']}.png", (19, 14), [90, 90, 90])
+            (raw / f"{job['id']}.txt").write_text(text_of(job['prompt']['path']), encoding='utf-8')
+            manifest['jobs'][job['id']] = {'attempts': [{'raw': f"{job['id']}.png", 'prompt': f"{job['id']}.txt"}], 'selected': 1}
+        save(raw / 'attempts.json', manifest)
+        compose(self.p / 'missing/plan.json', raw / 'attempts.json', self.p / 'missing-out')
+        manifest['jobs'][plan['jobs'][0]['id']]['attempts'][0]['reference'] = '../scene/jobs/tile-01/references.jpg'
+        save(raw / 'attempts-2.json', manifest)
+        with self.assertRaisesRegex(ValueError, 'no planned reference sheet'):
+            compose(self.p / 'missing/plan.json', raw / 'attempts-2.json', self.p / 'missing-out-2')
+
+    def test_sheet_is_bound_to_its_photos(self):
+        job = self.tiles[0]
+        with Image.open(job['references']['sheet']['path']) as im:
+            self.assertEqual(im.format, 'JPEG'); self.assertEqual(im.size, (768, 576 + int(32 * 3.4) + 12))
+        sheet = Path(job['references']['sheet']['path'])
+        Image.fromarray(blocks_image((768, 576 + int(32 * 3.4) + 12), 7, cell=16)).save(sheet, format='JPEG')
+        tampered = copy.deepcopy(self.plan); tampered['jobs'][0]['references']['sheet'] = record(sheet)
+        with self.assertRaisesRegex(ValueError, 'Reference sheet differs'): validate(tampered, self.p)
+        tampered = copy.deepcopy(self.plan); tampered['jobs'][0]['references']['species'][0]['cultivar_match'] = 'exact'
+        with self.assertRaisesRegex(ValueError, 'differs: references'): validate(tampered, self.p)
+        Image.fromarray(blocks_image((60, 40), 8, cell=5)).save(self.p / 'refs' / 'agave-species.png')
+        with self.assertRaisesRegex(ValueError, 'Missing or changed|differs'): validate(self.plan, self.p)
+
+
 class AnchoredRoute(PlanFixture):
-    """Optional anchor: full_view (schema 3) and legacy schema 2: tiles edit crops of the upscaled full-view result."""
+    """Optional anchor: full_view (schema 4, no reference sheets) and legacy schema 2: tiles edit crops of the upscaled
+    full-view result."""
     anchor = 'full_view'
     OFFSET = 30
 
@@ -703,6 +860,7 @@ class AnchoredRoute(PlanFixture):
         tile = self.tiles[0]
         self.assertIn('one native-resolution tile of an already-edited photograph', text_of(tile['prompt']['path']))
         self.assertIn('geometry', tile); self.assertNotIn('input', tile)
+        self.assertTrue(all('references' not in j for j in self.plan['jobs']))  # the anchored route has no reference sheets
         self.assertEqual(self.proof['operation'], OPERATION)
         self.assertEqual(self.proof['base']['source'], 'anchor'); self.assertEqual(self.proof['alignment']['metric'], 'luma_edge_ncc_blocks_v1')
         self.assertEqual(self.proof['used_tiles'], [t['id'] for t in self.tiles])
@@ -750,6 +908,24 @@ class LegacySchema2(AnchoredRoute):
         labels = gray_of(self.proof['ownership']['path']).astype(np.int16) - 1
         self.assertTrue(np.array_equal(labels, ownership(self.plan, 32, 32)))  # nearest centre, no seam search
         verify(self.proof, self.p)
+
+
+class LegacySchema3(SceneEditCompose):
+    """Schema 3 plans (no reference photos: one image per tile) still plan, compose and verify."""
+    schema = 3
+
+    def test_schema3_plan_has_no_references(self):
+        self.assertEqual(self.plan['schema_version'], 3); self.assertNotIn('reference_min_px', self.plan['params'])
+        self.assertTrue(all('references' not in j for j in self.plan['jobs']))
+        text = text_of(self.tiles[0]['prompt']['path'])
+        self.assertNotIn('second supplied image', text); self.assertIn('Edit target: the supplied image', text)
+        validate(self.plan, self.p); verify(self.proof, self.p)
+        tile = self.tiles[0]['id']
+        solid(self.raw / 'fake-ref.png', (16, 12), [1, 2, 3])
+        manifest = copy.deepcopy(self.manifest); manifest['jobs'][tile]['attempts'][0]['reference'] = 'fake-ref.png'
+        with self.assertRaisesRegex(ValueError, 'reference is not the planned composite crop'): self.compose_with(manifest, 'fake-ref')
+
+    test_attempts_attach_the_planned_reference_sheet = None
 
 
 def read_json(path):
