@@ -126,6 +126,10 @@ def run_codex(spec, wt, exp_dir, logs, env, timeout):
     sys.path.insert(0, str(PIPELINE_BIN))
     import codex_driver
     drv = codex_driver.ExecDriver(wt, logs, env=env, turn_timeout=timeout)
+    # Ben 2026-10-30: the image pass runs on GPT-6 Astra, high reasoning; a spec's codex_args override it.
+    extra = list(spec.get('codex_args') or ['-m', 'gpt-6-astra', '-c', 'model_reasoning_effort="high"'])
+    base = drv.base_args
+    drv.base_args = lambda last: base(last)[:1] + extra + base(last)[1:]
     r = drv.start(prompt_for(spec, wt, exp_dir))
     return {'final_message': r.final_message[-4000:], 'error': r.error, 'timed_out': r.timed_out,
             'usage_limited': r.usage_limited, 'commands': r.commands, 'session_id': r.session_id}

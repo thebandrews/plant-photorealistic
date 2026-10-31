@@ -13,7 +13,7 @@ You are running **one** experiment from the photoreal lab backlog. Your job is t
 3. **Code changes go in your branch only** (`exp/<id>` of plant-photorealistic, in your own worktree).
    Change nothing in `bench/` (gates, judge, crops): those are locked. Never write into the bench folder.
 4. **Budget.** Stay inside `budget_gpu_seconds` in `experiment.json` (render-remote exits 5 when spent).
-   Codex image generation counts as turns; keep a count. Don't loop renders; don't raise samples or resolution
+   Codex image generation (the image pass) counts as turns; keep a count. Don't loop renders; don't raise samples or resolution
    beyond the bench's 3840×2560.
 5. **Client data stays out of git.** Outputs, crops and intermediate images live only in the experiment folder.
 6. **Never print or store SAS URLs, keys or tokens.**
@@ -56,3 +56,6 @@ side with the shipped output) and the strict forensic `realism` are reported for
 
 Then run `python bench/bench.py gate <id>` yourself before finishing. If a gate fails, fix it (two attempts at
 most) or report it. Don't run `judge`; the orchestrator scores every experiment the same way.
+
+## Image pass model (Ben, 2026-10-30)
+The AI image pass uses GPT-6 Astra on high reasoning through Codex's built-in image generation (ChatGPT sign-in, no API key). Lab Codex runs default to `-m gpt-6-astra -c model_reasoning_effort="high"` (a spec's `codex_args` overrides it). Don't use Qwen/ComfyUI diffusion for the image pass unless Ben asks.
