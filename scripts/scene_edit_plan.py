@@ -279,7 +279,9 @@ def prompt(rows, records, mulch, sheet=False):
                   ground=MULCH if mulch else NO_MULCH)
     text = FULL_PREAMBLE.format(**fields)
     if sheet:  # the composite is the first image, the labelled reference sheet the second
-        text = text.replace('Edit target: the supplied image', 'Edit target: the first supplied image') + ' ' + REFERENCE_LINE
+        head, tail = text.split(' The planting, by species', 1)  # the sheet sentence goes before the species list
+        text = (head.replace('Edit target: the supplied image', 'Edit target: the first supplied image') + ' '
+                + REFERENCE_LINE + ' The planting, by species' + tail)
     order = []
     for r in rows:
         if r['species'] not in order:

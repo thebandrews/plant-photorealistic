@@ -128,6 +128,9 @@ class SceneEditPlan(PlanFixture):
         self.assertIn('Keep the house, sky, street and neighbourhood unchanged', text)
         self.assertIn('shredded bark mulch', text)
         self.assertIn(REFERENCE_LINE, text)
+        self.assertLess(text.index(REFERENCE_LINE), text.index('The planting, by species'))  # sheet before the list
+        self.assertTrue(text.split('
+')[0].endswith('foreground):'))
         self.assertNotIn('tile', text)
         tiny = next(r for r in self.job['inventory'] if r['id'] == 'tiny')
         self.assertEqual(tiny['size_px'], [1, 1]); self.assertEqual(tiny['location'], location(tiny['position_percent']))
