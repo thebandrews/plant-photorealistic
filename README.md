@@ -24,7 +24,7 @@ python scripts/appearance_guard.py FINAL_REVIEW.json
 # Default scene photographic edit (gpt-6-astra, high reasoning, built-in image tool); see references/scene-edit.md
 # RECORDS.json carries reference_photos (identified real photos, kept next to it, model input only) per species
 python scripts/scene_edit_plan.py plan --finish-review FINAL_REVIEW.json --records WORK/RECORDS.json --out SCENE_DIR
-# Edit each SCENE_DIR/jobs/tile-NN/input.png (the composite crop) with its prompt.txt and references.jpg, then:
+# Edit SCENE_DIR/jobs/full/input.png (the whole composite) with its prompt.txt and references.jpg in one pass, then:
 python scripts/scene_edit_compose.py compose SCENE_DIR/plan.json --attempts ATTEMPTS.json --out SCENE_OUT
 python scripts/appearance_guard.py SCENE_REVIEW.json
 python -m unittest discover -s scripts -p "test_*.py" -v
