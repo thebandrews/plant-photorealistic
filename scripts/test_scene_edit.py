@@ -16,7 +16,7 @@ from handoff import record
 from raster import load, save as save_png
 from scene_edit_compose import (CHECK_SET, COMPARE_WIDTH, OPERATION, REAL_FAILURE_CHECKS, compose, side_by_side, verify)
 from scene_edit_plan import (JOB_ID, LABEL_LINE, LABEL_OUTLINE, REFERENCE_LINE, REFERENCE_SHEET_LONG_EDGE, RETRY_HEADER,
-                             assign_labels, best_attempt, input_dims, label_map, location, meaningful_species, prepare,
+                             RANK_KEYS, assign_labels, best_attempt, input_dims, label_map, location, meaningful_species, prepare,
                              reference_sheet, region_weight, edit_region, resized, retry_items, retry_prompt,
                              retry_prompt_text, validate, view_references)
 from test_contract import save
@@ -39,6 +39,11 @@ RECORDS = {'species': {
     'Synthetic tiny cultivar': {'common_name': 'tiny daisy', 'description': 'low mound of small leaves',
                                 'flowers': 'many small white daisies with yellow centres'}}}
 ALL_PASS = dict.fromkeys(REAL_FAILURE_CHECKS, 'pass')
+ALL_BLOOM = {'flowering_plants': 1, 'in_bloom': 1}
+
+
+def ranked(concerns=0, species=0, moved=0, added=0, bloom_low=0, other=0, **attempt):
+    return {**attempt, **dict(zip(RANK_KEYS, (concerns, species, moved, added, bloom_low, other)))}
 MODEL = {'agent_model': 'gpt-6-astra', 'reasoning_effort': 'high', 'image_tool': 'image_gen.imagegen'}
 
 
@@ -382,7 +387,7 @@ class SceneEditCompose(PlanFixture):
         return np.array(Image.fromarray(bright).resize(RAW_SIZE, Image.LANCZOS))
 
     def make_review(self, proof, out):
-        return {'schema_version': 5, 'method': 'scene_photographic_edit', 'handoff': record(self.p / 'handoff.json'),
+        return {'schema_version': 6, 'method': 'scene_photographic_edit', 'handoff': record(self.p / 'handoff.json'),
                 'camera_id': 'front', 'baseline_review': record(self.p / 'finish-review.json'),
                 'candidate': proof['candidate'], 'scene_edit_proof': record(self.p / out / 'scene-edit-proof.json'),
                 'model': dict(MODEL),
@@ -390,6 +395,7 @@ class SceneEditCompose(PlanFixture):
                                  'observations': 'Synthetic fixture truth, not actual photo recognition.',
                                  'paired_evidence': [proof['candidate'], proof['compare']], 'check_set': CHECK_SET,
                                  'checks': dict(ALL_PASS), 'defects': [], 'defect_count': 0,
+                                 'bloom': dict(ALL_BLOOM), 'ranked_defects': ranked(),
                                  'attempts': len(proof['attempts']['jobs'][0]['attempts']),
                                  'selected_attempt': proof['attempts']['jobs'][0]['selected']}}
 
@@ -435,6 +441,7 @@ class SceneEditCompose(PlanFixture):
         self.assertEqual(result['model']['agent_model'], 'gpt-6-astra'); self.assertEqual(result['attempts'], 1)
         self.assertEqual(result['check_set'], CHECK_SET); self.assertEqual(result['defect_count'], 0)
         self.assertEqual(result['real_failure_observations'], dict(ALL_PASS))
+        self.assertEqual(result['ranked_defects'], ranked()); self.assertEqual(result['bloom'], dict(ALL_BLOOM, bloom_low=False))
         self.assertEqual(result['output']['upscale'], 1.3333); self.assertEqual(result['compare'], self.proof['compare'])
         self.assertEqual(check(self.fin.review, self.p)['method'], 'photo_finish')  # previous route unchanged
 
@@ -446,6 +453,8 @@ class SceneEditCompose(PlanFixture):
             {'type': 'extent_change', 'where': 'left agave', 'observation': 'crown about 10% wider'},
             {'type': 'invented_plant', 'where': 'bed edge, centre', 'observation': 'synthetic'}]
         review['scene_review']['defect_count'] = 2
+        review['scene_review']['bloom'] = {'flowering_plants': 5, 'in_bloom': 2}
+        review['scene_review']['ranked_defects'] = ranked(concerns=1, added=1, bloom_low=1, other=1)
         result = check(review, self.p)
         self.assertEqual(result['status'], 'completed_with_limitations')
         self.assertEqual(result['delivered'], 'scene_edit_composite'); self.assertEqual(result['scene_edit_status'], 'delivered')
@@ -455,6 +464,9 @@ class SceneEditCompose(PlanFixture):
                                                     'observations': 'front step, left: Synthetic flower growing from the tread.'})
         self.assertEqual(result['limitations'][1], {'check': 'defect: extent_change', 'blocking': False,
                                                     'observations': 'left agave: crown about 10% wider'})
+        self.assertEqual(result['limitations'][-1], {'check': 'defect: bloom_low', 'blocking': False,
+                                                     'observations': '2 of 5 flowering plants in bloom (below 60%)'})
+        self.assertEqual(result['ranked_defects'], ranked(concerns=1, added=1, bloom_low=1, other=1))
         self.assertTrue(all(r['blocking'] is False for r in result['non_blocking_observations']))
 
     def test_review_schema_is_required(self):
@@ -466,13 +478,19 @@ class SceneEditCompose(PlanFixture):
                                 (lambda v: v['checks'].pop('hardscape_unchanged'), 'exactly the real-failure'),
                                 (lambda v: v['checks'].update(hardscape_unchanged='fail'), 'is "pass", or'),
                                 (lambda v: v.update(selected_attempt=2), 'recorded attempts'),
-                                (lambda v: v.update(native_size_crops_loaded=False), 'native-size crops')):
+                                (lambda v: v.update(native_size_crops_loaded=False), 'native-size crops'),
+                                (lambda v: v.pop('bloom'), 'Record bloom'),
+                                (lambda v: v.update(bloom={'flowering_plants': 2, 'in_bloom': 3}), 'Record bloom'),
+                                (lambda v: v['bloom'].update(bloom_low=True), 'bloom_low is'),
+                                (lambda v: v.pop('ranked_defects'), 'Record ranked_defects'),
+                                (lambda v: v.update(ranked_defects=ranked(species=1)), 'ranked_defects differs')):
             review = copy.deepcopy(self.review); change(review['scene_review'])
             with self.assertRaisesRegex(ValueError, message): check(review, self.p)
         review = copy.deepcopy(self.review); review['release_policy'] = 'fallback_previous_composite'
         with self.assertRaisesRegex(ValueError, 'no fallback'): check(review, self.p)
-        review = copy.deepcopy(self.review); review['schema_version'] = 4
-        with self.assertRaisesRegex(ValueError, 'Only schema 5'): check(review, self.p)
+        for old in (4, 5):
+            review = copy.deepcopy(self.review); review['schema_version'] = old
+            with self.assertRaisesRegex(ValueError, 'Only schema 6'): check(review, self.p)
         review = copy.deepcopy(self.review); review['candidate'] = self.fin.review['candidate']
         with self.assertRaisesRegex(ValueError, 'candidate differs'): check(review, self.p)
 
@@ -483,13 +501,14 @@ class SceneEditCompose(PlanFixture):
         bad = copy.deepcopy(self.review); bad['model']['reasoning_effort'] = 'low'
         with self.assertRaisesRegex(ValueError, 'gpt-6-astra/high'): check(bad, self.p)
 
-    def notes(self, name, concerns=(), defects=()):
+    def notes(self, name, concerns=(), defects=(), bloom=(1, 1)):
         """Review notes of one attempt, saved next to the attempt manifest."""
         checks = dict(ALL_PASS)
         for check_, where, observation in concerns:
             checks[check_] = {'result': 'concern', 'where': where, 'observation': observation}
         defects = [{'type': t, 'where': w, 'observation': o} for t, w, o in defects]
-        save(self.raw / name, {'check_set': CHECK_SET, 'checks': checks, 'defects': defects, 'defect_count': len(defects)})
+        save(self.raw / name, {'check_set': CHECK_SET, 'checks': checks, 'defects': defects, 'defect_count': len(defects),
+                               'bloom': {'flowering_plants': bloom[0], 'in_bloom': bloom[1]}})
         return name
 
     def second_attempt(self, first_notes):
@@ -513,7 +532,7 @@ class SceneEditCompose(PlanFixture):
             ([dict(ok, prompt='changed.txt')], 1, 'exact planned prompt'),
             ([ok, dict(ok, prompt=second)], 2, 'review notes of both'),
             ([dict(ok, notes=first), dict(ok, prompt='freehand.txt', notes=better)], 2, 'retry prompt built from'),
-            ([dict(ok, notes=first), dict(ok, prompt=second, notes=better)], 1, 'fewer real-failure concerns'),
+            ([dict(ok, notes=first), dict(ok, prompt=second, notes=better)], 1, 'lowest ranked defects'),
             ([ok] * 3, 1, 'Record 1-2 attempts'),
             ([], None, 'Record 1-2 attempts'),
             ([ok], None, 'always delivers one'),
@@ -534,45 +553,54 @@ class SceneEditCompose(PlanFixture):
         review = self.make_review(proof, 'two')
         result = check(review, self.p)
         self.assertEqual(result['selected'], 2)
-        self.assertEqual(result['attempt_scores'], [{'attempt': 1, 'concerns': 1, 'defects': 2},
-                                                    {'attempt': 2, 'concerns': 0, 'defects': 1}])
+        self.assertEqual(result['attempt_scores'], [ranked(concerns=1, other=2, attempt=1), ranked(other=1, attempt=2)])
         self.assertEqual(check(self.review, self.p)['attempt_scores'], [])  # one attempt, no notes recorded
 
-    def test_retry_prompt_is_built_from_the_recorded_defects(self):
+    def test_retry_prompt_lists_the_ranked_defects_in_rank_order(self):
         planned = text_of(self.job['prompt']['path'])
+        keep = "; keep everything else as in your previous result's realism"
         notes = self.notes('notes.json', concerns=[('plants_rooted_in_beds', 'front step', 'a daisy grows from the tread')],
-                           defects=[('bloom_missing', 'tiny daisy, left', 'no flowers'),
-                                    ('invented_plant', 'centre bed', 'an extra fern'),
+                           defects=[('invented_plant', 'centre bed', 'an extra fern'),
+                                    ('bloom_missing', 'tiny daisy, left', 'no flowers'),
+                                    ('significant_movement', 'agave #1', 'moved across the bed'),
                                     ('cultivar_detail', 'left agave', 'leaves too broad for the cultivar'),
-                                    ('other', 'right', 'Queen Victoria agave reads as an aloe'),
-                                    ('other', 'sky', 'slightly hazy'),
-                                    ('cultivar_detail', 'bed edge', 'unnamed tuft is greener'),
+                                    ('species_change', 'agave #1', 'reads as an aloe'),
                                     ('extent_change', 'agave', 'crown wider'),
-                                    ('movement', 'agave', 'shifted a little')])
-        text = self.second_attempt(notes)
-        text = text_of(self.raw / text)
+                                    ('movement', 'agave', 'shifted a little')],
+                           bloom=(5, 2))
+        text = text_of(self.raw / self.second_attempt(notes))
         self.assertTrue(text.startswith(planned.rstrip('\n') + '\n\n' + RETRY_HEADER + '\n'))
         fixes = [line for line in text.splitlines() if line.startswith('Fix: ')]
         self.assertEqual(fixes, [
-            "Fix: front step — a daisy grows from the tread; keep everything else as in your previous result's realism",
-            "Fix: tiny daisy, left — no flowers; keep everything else as in your previous result's realism",
-            "Fix: centre bed — an extra fern; keep everything else as in your previous result's realism",
-            "Fix: left agave — leaves too broad for the cultivar; keep everything else as in your previous result's realism",
-            "Fix: right — Queen Victoria agave reads as an aloe; keep everything else as in your previous result's realism"])
-        quiet = self.notes('quiet.json', defects=[('extent_change', 'agave', 'crown wider'), ('other', 'sky', 'hazy')])
+            'Fix: front step \u2014 a daisy grows from the tread' + keep,
+            'Fix: agave #1 \u2014 reads as an aloe' + keep,
+            'Fix: agave #1 \u2014 moved across the bed' + keep,
+            'Fix: centre bed \u2014 an extra fern' + keep,
+            'Fix: flowering plants \u2014 only 2 of 5 flowering plants are in bloom; show flowers on the listed flowering '
+            'species, at least 60% of them (3 of 5) in bloom true to cultivar' + keep])
+        # Unranked defects (minor movement, fuller crowns, cultivar detail, one plant without flowers) and a bloom
+        # share of at least 60% never trigger attempt 2.
+        quiet = self.notes('quiet.json', defects=[('extent_change', 'agave', 'crown wider'), ('movement', 'agave', 'a little'),
+                                                  ('cultivar_detail', 'agave', 'broad'), ('bloom_missing', 'daisy', 'none')],
+                           bloom=(5, 3))
         with self.assertRaisesRegex(ValueError, 'deliver attempt 1'):
             retry_prompt(self.p / 'scene/plan.json', self.raw / quiet, self.raw / 'never.txt')
         self.assertFalse((self.raw / 'never.txt').exists())
         with self.assertRaisesRegex(ValueError, 'check_set'):
-            retry_items({'checks': dict(ALL_PASS), 'defects': [], 'defect_count': 0}, self.job['inventory'], RECORDS)
+            retry_items({'checks': dict(ALL_PASS), 'defects': [], 'defect_count': 0, 'bloom': dict(ALL_BLOOM)})
         with self.assertRaisesRegex(ValueError, 'deliver attempt 1'):
             retry_prompt_text(planned, [])
 
-    def test_selection_rule(self):
-        self.assertEqual(best_attempt([{'attempt': 1, 'concerns': 1, 'defects': 0}, {'attempt': 2, 'concerns': 0, 'defects': 9}]), 2)
-        self.assertEqual(best_attempt([{'attempt': 1, 'concerns': 0, 'defects': 5}, {'attempt': 2, 'concerns': 0, 'defects': 3}]), 2)
-        self.assertEqual(best_attempt([{'attempt': 1, 'concerns': 1, 'defects': 3}, {'attempt': 2, 'concerns': 1, 'defects': 3}]), 1)
-        self.assertEqual(best_attempt([{'attempt': 1, 'concerns': 0, 'defects': 2}, {'attempt': 2, 'concerns': 1, 'defects': 0}]), 1)
+    def test_selection_rule_is_ben_ranking(self):
+        pick = lambda one, two: best_attempt([dict(one, attempt=1), dict(two, attempt=2)])
+        self.assertEqual(pick(ranked(concerns=1), ranked(species=3, other=9)), 2)  # real failures rank first
+        self.assertEqual(pick(ranked(species=1), ranked(moved=2, added=2, bloom_low=1, other=9)), 2)  # species change
+        self.assertEqual(pick(ranked(moved=1), ranked(added=3, bloom_low=1)), 2)  # then significant movement
+        self.assertEqual(pick(ranked(added=1), ranked(bloom_low=1, other=9)), 2)  # then plant addition
+        self.assertEqual(pick(ranked(bloom_low=1), ranked(other=9)), 2)  # then bloom below 60%
+        self.assertEqual(pick(ranked(other=3), ranked(other=2)), 2)
+        self.assertEqual(pick(ranked(added=1, other=2), ranked(added=1, other=2)), 1)  # a tie keeps attempt 1
+        self.assertEqual(pick(ranked(other=5), ranked(added=1)), 1)
 
     def test_aspect_mismatch_rejected(self):
         solid(self.raw / 'wide.png', (48, 24), [0, 0, 0])

@@ -12,8 +12,10 @@ photographs covers the view's species (largest first, at most 16, long edge at m
 this order: the composite (the edit target), the label map, the reference sheet.
 Deterministic: validate() re-derives every field. No image generation or recognition happens here.
 
-`retry_prompt` builds attempt 2's prompt from the review notes of attempt 1: the planned prompt plus a frozen
-correction block, one `Fix:` line per real-failure concern, missing bloom, invented plant or species-form drift.
+Review notes rank defects by Ben's priorities (2026-11-01): species change, then significant plant movement, then
+plant addition, then fewer than 60% of the flowering plants in bloom; every real-failure concern ranks above them.
+`retry_prompt` builds attempt 2's prompt from attempt 1's notes: the planned prompt plus a frozen correction block,
+one `Fix:` line per real-failure concern and ranked defect, in rank order.
 
 Plan schema 5 (operation scene_edit_full_view_v1) is the only plan this version writes or verifies. The tiled routes
 of schemas 1-4 (lab P1-P4) were removed: they delivered patchwork views that mixed photographic and rendered tiles.
@@ -59,15 +61,20 @@ LABEL_LINE = (
     "numbers, outlines or labels.")
 ORDINALS = ('first', 'second', 'third')
 LABEL_OUTLINE = (255, 214, 0)
-# Review notes (the scene review's real-failure observations and defects), also recorded per attempt.
+# Review notes (the scene review's real-failure observations, defects and bloom count), also recorded per attempt.
 CHECK_SET = 'real_failures_observed_v1'
 REAL_FAILURE_CHECKS = ('plants_rooted_in_beds', 'hardscape_unchanged', 'no_seams_or_double_images', 'species_form_recognizable')
-DEFECT_TYPES = ('movement', 'extent_change', 'extra_foliage', 'invented_plant', 'cultivar_detail', 'bloom_missing',
-                'colour_shift', 'other')
-# Attempt 2 is made only for these: every real-failure concern, missing bloom, invented plants, and species-form drift
-# (a cultivar_detail or other defect that names a plant of the view).
-RETRY_DEFECTS = ('bloom_missing', 'invented_plant')
-SPECIES_DRIFT_DEFECTS = ('cultivar_detail', 'other')
+# species_change: a numbered or listed plant now reads as a different species or form. significant_movement: a plant
+# visibly relocated (more than about half its own width, or across a bed); minor shifts are `movement`.
+# invented_plant: a plant addition. bloom_missing (one plant without flowers) is recorded but not ranked.
+DEFECT_TYPES = ('species_change', 'significant_movement', 'invented_plant', 'movement', 'extent_change', 'extra_foliage',
+                'cultivar_detail', 'bloom_missing', 'colour_shift', 'other')
+# Ben (2026-11-01): "100% of plants in bloom is not top priority. Here is the ranked priority of defects to focus on:
+# 1: Species change, 2: significant plant movement, 3: plant addition, 4: plant percentage in bloom < 60%"
+RANKED_DEFECTS = ('species_change', 'significant_movement', 'invented_plant')
+BLOOM_MIN_SHARE = .6
+# The ranked score, compared lexicographically (lower is better); every real-failure concern ranks first.
+RANK_KEYS = ('real_failure_concerns', 'species_change', 'significant_movement', 'invented_plant', 'bloom_low', 'other_defects')
 RETRY_HEADER = ("CORRECTIONS FOR THIS ATTEMPT. Edit the original view again with everything above, and fix these "
                 "problems the review recorded in the previous attempt:")
 RETRY_LINE = "Fix: {where} — {observation}; keep everything else as in your previous result's realism"
@@ -465,9 +472,10 @@ def label_map(small, plant_ids, rows, box):
     return np.array(image)
 
 
-def check_notes(notes):
+def check_notes(notes, require_ranked=False):
     """Review notes of one attempt (or the scene review): the four real-failure observations ('pass', or a concern
-    naming where and what) and the defect list. Returns (concerns, defects)."""
+    naming where and what), the defect list and the bloom count {flowering_plants, in_bloom}. A recorded `bloom_low`
+    or `ranked_defects` must match what they derive. Returns (concerns, defects, bloom)."""
     require(isinstance(notes, dict) and notes.get('check_set') == CHECK_SET, f'Scene edit reviews use check_set {CHECK_SET}')
     checks = notes.get('checks', {})
     require(isinstance(checks, dict) and set(checks) == set(REAL_FAILURE_CHECKS),
@@ -486,53 +494,69 @@ def check_notes(notes):
         require(isinstance(d, dict) and d.get('type') in DEFECT_TYPES and d.get('where') and d.get('observation'),
                 'Each defect needs a type (' + ', '.join(DEFECT_TYPES) + '), where and observation')
     require(notes.get('defect_count') == len(defects), 'defect_count must equal the number of recorded defects')
-    return concerns, defects
+    bloom = notes.get('bloom')
+    require(isinstance(bloom, dict) and all(isinstance(bloom.get(k), int) and not isinstance(bloom.get(k), bool)
+                                            for k in ('flowering_plants', 'in_bloom'))
+            and 0 <= bloom['in_bloom'] <= bloom['flowering_plants'],
+            'Record bloom as {"flowering_plants": N, "in_bloom": M} with 0 <= M <= N (visible flowering plants)')
+    low = bloom_low(bloom)
+    require(bloom.get('bloom_low', low) == low, f'bloom_low is in_bloom/flowering_plants < {BLOOM_MIN_SHARE:.0%}')
+    ranked = ranked_defects(concerns, defects, bloom)
+    require(notes.get('ranked_defects', ranked) == ranked, 'ranked_defects differs from the recorded concerns, defects and bloom')
+    require(not require_ranked or 'ranked_defects' in notes, 'Record ranked_defects (' + ', '.join(RANK_KEYS) + ')')
+    return concerns, defects, bloom
 
 
-def plant_names(rows, records):
-    """Lower-case words that name a plant of the view: botanical names, genera, common names and their last word."""
-    names = set()
-    for name in {r['species'] for r in rows}:
-        common = records['species'][name]['common_name']
-        names |= {name, name.split()[0], common, common.split()[-1]}
-    return sorted(n.lower() for n in names if len(n) >= 4)
+def bloom_low(bloom):
+    return bloom['flowering_plants'] > 0 and bloom['in_bloom'] < BLOOM_MIN_SHARE * bloom['flowering_plants']
 
 
-def retry_items(notes, rows, records):
-    """What attempt 2 must fix: every real-failure concern, missing bloom, invented plants, and species-form drift
-    (a cultivar_detail or other defect that names a plant of the view)."""
-    concerns, defects = check_notes(notes)
-    names = plant_names(rows, records)
-    names_plant = lambda d: any(n in f"{d['where']} {d['observation']}".lower() for n in names)
-    return concerns + [d for d in defects if d['type'] in RETRY_DEFECTS or
-                       (d['type'] in SPECIES_DRIFT_DEFECTS and names_plant(d))]
+def ranked_defects(concerns, defects, bloom):
+    """Ben's ranking as counts in RANK_KEYS order: real-failure concerns, species changes, significant movements,
+    plant additions, bloom below 60% (0/1), then all other defects."""
+    count = lambda t: sum(d['type'] == t for d in defects)
+    return {'real_failure_concerns': len(concerns), **{t: count(t) for t in RANKED_DEFECTS},
+            'bloom_low': int(bloom_low(bloom)), 'other_defects': sum(d['type'] not in RANKED_DEFECTS for d in defects)}
+
+
+def retry_items(notes):
+    """What attempt 2 must fix, in rank order: every real-failure concern, then species changes, significant
+    movements, plant additions, and a bloom share below 60%."""
+    concerns, defects, bloom = check_notes(notes)
+    items = concerns + [d for t in RANKED_DEFECTS for d in defects if d['type'] == t]
+    if bloom_low(bloom):
+        n, m = bloom['flowering_plants'], bloom['in_bloom']
+        need = math.ceil(BLOOM_MIN_SHARE * n - 1e-9)
+        items.append({'where': 'flowering plants',
+                      'observation': f'only {m} of {n} flowering plants are in bloom; show flowers on the listed flowering '
+                                     f'species, at least 60% of them ({need} of {n}) in bloom true to cultivar'})
+    return items
 
 
 def retry_prompt_text(planned, items):
     """Attempt 2's prompt: the planned prompt, then the frozen correction block with one Fix line per item."""
-    require(items, 'Attempt 1 recorded no real-failure concern, missing bloom, invented plant or species-form drift; '
-                   'deliver attempt 1 (attempt 2 is only for those)')
+    require(items, 'Attempt 1 recorded no real-failure concern, species change, significant movement, plant addition '
+                   'or bloom below 60%; deliver attempt 1 (attempt 2 is only for those)')
     fixes = [RETRY_LINE.format(where=i['where'], observation=i['observation']) for i in items]
     return planned.rstrip('\n') + '\n\n' + RETRY_HEADER + '\n' + '\n'.join(fixes) + '\n'
 
 
 def score(notes):
-    concerns, defects = check_notes(notes)
-    return {'concerns': len(concerns), 'defects': len(defects)}
+    """One attempt's ranked_defects."""
+    return ranked_defects(*check_notes(notes))
 
 
 def best_attempt(scores):
-    """Fewer real-failure concerns, then fewer defects; a tie keeps the earlier attempt."""
-    return min(scores, key=lambda s: (s['concerns'], s['defects'], s['attempt']))['attempt']
+    """The lowest ranked score, compared in RANK_KEYS order; a tie keeps the earlier attempt."""
+    return min(scores, key=lambda s: (tuple(s[k] for k in RANK_KEYS), s['attempt']))['attempt']
 
 
 def retry_prompt(plan_path, notes_path, out):
     pp = Path(plan_path).resolve()
     plan = validate(read(pp), pp.parent)[0]
     job = plan['jobs'][0]
-    records = read(checked(plan['records'], pp.parent))
     text = retry_prompt_text(checked(job['prompt'], pp.parent).read_text(encoding='utf-8'),
-                             retry_items(read(Path(notes_path).resolve()), job['inventory'], records))
+                             retry_items(read(Path(notes_path).resolve())))
     out = Path(out).resolve(); require(not out.exists(), 'Use a new prompt path for attempt 2')
     out.write_text(text, encoding='utf-8')
     return text
