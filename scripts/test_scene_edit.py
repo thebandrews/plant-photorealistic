@@ -325,12 +325,14 @@ class CompositeStructureMetric(unittest.TestCase):
                 self.assertTrue(result['aligned'], result)
                 self.assertGreater(result['lenient']['global_ncc'], .75); self.assertGreater(result['strict']['worst_block_ncc'], .45)
 
-    def test_gross_shift_and_relayout_are_rejected(self):
+    def test_gross_shift_is_rejected_by_the_hardscape(self):
+        # Plant movement and fuller crowns are defects, not failures (P3: real re-renders that kept the hardscape scored
+        # lenient 0.24-0.50), so a whole-content shift is caught where it moves the hardscape. A re-laid-out planting
+        # is left to the visual review's species and invented_plant checks.
         for seed in self.scenes:
             result = self.check(seed, shift=(0, 40))
-            self.assertIn('lenient_global_ncc', result['failed']); self.assertIn('strict_global_ncc', result['failed'])
-            self.assertLess(result['lenient']['global_ncc'], COMPOSITE_ALIGNMENT['lenient_global_min'])
-            self.assertIn('lenient_global_ncc', self.check(seed, layout=99)['failed'])
+            self.assertFalse(result['aligned']); self.assertIn('strict_global_ncc', result['failed'])
+            self.assertLess(result['lenient']['global_ncc'], .65)
 
     def test_hardscape_lines_moved_or_added_are_rejected(self):
         for seed in self.scenes:
