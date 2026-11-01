@@ -59,6 +59,10 @@ FULL_PREAMBLE = (
     "remove, replace or merge a plant. No invented hybrid foliage. Every flowering plant is in full bloom, true to its "
     "cultivar. The planting, by species, with how many plants are visible and where they are in the view (left, centre "
     "or right; background, middle ground or foreground):")
+SIZES = ((.03, 'tiny'), (.10, 'small'), (.25, 'medium'), (float('inf'), 'large'))  # share of the view side
+TOTAL_LINE = ("In total {n} plants of {s} species. The edited view shows exactly these plants: none added, none lost, "
+              "each its listed species at its listed size and in its place; a plant cut off by the view edge or behind "
+              "another plant stays partly hidden.")
 MULCH = 'Ground inside beds is shredded bark mulch.'
 NO_MULCH = 'Ground inside beds keeps its existing designed material.'
 HARDSCAPE = 'concrete, steps, walls, planters, edging and the house'
@@ -263,18 +267,29 @@ def reference_sheet(entries, base=None):
     return np.array(sheet)
 
 
-def species_line(name, record_, rows):
+def size_class(size_px, dims):
+    """Plant size for the prompt: its renderer-ID bounding box's larger side as a share of the same view side."""
+    share = max(size_px[0] / dims[0], size_px[1] / dims[1])
+    return next(name for limit, name in SIZES if share < limit)
+
+
+def species_line(name, record_, rows, dims):
     flowers = record_['flowers'] if record_.get('flowers') else 'none required; preserve foliage'
     where = {}
     for r in rows:
-        where[r['location']] = where.get(r['location'], 0) + 1
-    places = ', '.join(f'{loc} {n}' for loc, n in sorted(where.items(), key=lambda kv: (-kv[1], kv[0])))
+        where.setdefault(r['location'], []).append(size_class(r['size_px'], dims))
+    order = {z: k for k, (_, z) in enumerate(SIZES)}
+    def place(loc, sizes):
+        sizes = sorted(sizes, key=lambda z: -order[z])
+        counts = {z: sizes.count(z) for z in sizes}
+        return f"{loc} {len(sizes)} (" + ', '.join(f'{n} {z}' for z, n in counts.items()) + ')'
+    places = ', '.join(place(loc, z) for loc, z in sorted(where.items(), key=lambda kv: (-len(kv[1]), kv[0])))
     count = len(rows)
     return (f"{name} ({record_['common_name']}; {record_['description']}); flowers: {flowers}. "
             f"{count} plant{'s' if count != 1 else ''}: {places}")
 
 
-def prompt(rows, records, mulch, sheet=False):
+def prompt(rows, records, mulch, dims, sheet=False):
     fields = dict(hardscape=records.get('hardscape') or HARDSCAPE, materials=records.get('materials') or MATERIALS,
                   ground=MULCH if mulch else NO_MULCH)
     text = FULL_PREAMBLE.format(**fields)
@@ -287,9 +302,11 @@ def prompt(rows, records, mulch, sheet=False):
         if r['species'] not in order:
             order.append(r['species'])
     order.sort(key=lambda s: (-sum(r['visible_pixels'] for r in rows if r['species'] == s), s))  # largest first
-    lines = [species_line(s, records['species'][s], [r for r in rows if r['species'] == s]) for s in order]
+    lines = [species_line(s, records['species'][s], [r for r in rows if r['species'] == s], dims) for s in order]
     if not lines:
         lines = ['No designed plant is visible in this view; refine only bed, ground and hardscape surfaces.']
+    else:
+        lines.append(TOTAL_LINE.format(n=len(rows), s=len(order)))
     return text + '\n' + '\n'.join(lines) + '\n'
 
 
@@ -331,7 +348,7 @@ def derive(review_path, records_path, params):
     refs = view_references(rows, records, records_path.parent, min_px)
     job = {'id': JOB_ID, 'kind': 'full_view', 'box': box, 'input_size': input_dims(w, h, kept['input_size']),
            'inventory': rows, 'references': refs,
-           'prompt_text': prompt(rows, records, layers['bed_on'], bool(refs['species']))}
+           'prompt_text': prompt(rows, records, layers['bed_on'], [w, h], bool(refs['species']))}
     return {'review': record(review_path), 'records': record(records_path), 'composite': record(composite),
             'cleaned_photo': record(checked(proof['cleaned_photo'], fp.parent)), 'camera_id': view['camera_id'],
             'handoff': record(hp), 'dimensions': [w, h], 'baseline_status': result['status'],

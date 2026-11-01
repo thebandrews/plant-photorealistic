@@ -15,7 +15,7 @@ from appearance_guard import check
 from handoff import record
 from raster import load, save as save_png
 from scene_edit_compose import (CHECK_SET, COMPARE_WIDTH, OPERATION, REAL_FAILURE_CHECKS, compose, side_by_side, verify)
-from scene_edit_plan import (JOB_ID, REFERENCE_LINE, REFERENCE_SHEET_LONG_EDGE, input_dims, location, meaningful_species,
+from scene_edit_plan import (JOB_ID, REFERENCE_LINE, REFERENCE_SHEET_LONG_EDGE, input_dims, location, size_class, meaningful_species,
                              prepare, reference_sheet, region_weight, edit_region, resized, validate, view_references)
 from test_contract import save
 import test_finishing
@@ -134,10 +134,19 @@ class SceneEditPlan(PlanFixture):
         tiny = next(r for r in self.job['inventory'] if r['id'] == 'tiny')
         self.assertEqual(tiny['size_px'], [1, 1]); self.assertEqual(tiny['location'], location(tiny['position_percent']))
         self.assertNotIn('hidden', [r['id'] for r in self.job['inventory']])  # no visible pixels
-        self.assertIn(f"flowers: many small white daisies with yellow centres. 1 plant: {tiny['location']} 1", text)
+        self.assertIn(f"flowers: many small white daisies with yellow centres. 1 plant: {tiny['location']} 1 (1 tiny)", text)
+        n = len(self.job['inventory']); s = len({r['species'] for r in self.job['inventory']})
+        self.assertTrue(text.strip().splitlines()[-1].startswith(f'In total {n} plant'))
+        self.assertIn(f'{s} species. The edited view shows exactly these plants: none added, none lost', text)
         self.assertIn('Agave victoriae-reginae (Queen Victoria agave; compact dense rosette', text)
         lines = text.strip().split('\n')[1:]
         self.assertTrue(lines[0].startswith('Agave victoriae-reginae'))  # largest species first
+
+    def test_size_class_is_the_larger_share_of_the_view_side(self):
+        self.assertEqual(size_class([1, 1], [1000, 500]), 'tiny')
+        self.assertEqual(size_class([20, 40], [1000, 500]), 'small')  # 2% wide but 8% tall
+        self.assertEqual(size_class([240, 10], [1000, 500]), 'medium')
+        self.assertEqual(size_class([100, 125], [1000, 500]), 'large')
 
     def test_plan_is_deterministic_and_frozen(self):
         again = prepare(self.p / 'finish-review.json', self.p / 'records.json', self.p / 'scene-2', **PARAMS)
