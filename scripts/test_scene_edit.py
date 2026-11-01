@@ -134,7 +134,7 @@ class SceneEditPlan(PlanFixture):
         tiny = next(r for r in self.job['inventory'] if r['id'] == 'tiny')
         self.assertEqual(tiny['size_px'], [1, 1]); self.assertEqual(tiny['location'], location(tiny['position_percent']))
         self.assertNotIn('hidden', [r['id'] for r in self.job['inventory']])  # no visible pixels
-        self.assertIn(f"flowers: many small white daisies with yellow centres. 1 plant: {tiny['location']} 1 (1 tiny)", text)
+        self.assertIn(f"flowers: many small white daisies with yellow centres. 1 plant: {tiny['location']} 1 (1 {size_class([1, 1], self.plan['dimensions'])})", text)
         n = len(self.job['inventory']); s = len({r['species'] for r in self.job['inventory']})
         self.assertTrue(text.strip().splitlines()[-1].startswith(f'In total {n} plant'))
         self.assertIn(f'{s} species. The edited view shows exactly these plants: none added, none lost', text)
