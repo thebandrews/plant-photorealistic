@@ -1,24 +1,28 @@
 # Scene photographic edit (default photo appearance route)
 
-The finished `photo_finish` composite keeps the designed species, roots and hardscape but still reads as rendered plants. This route makes the landscape part of that photograph an ordinary real photograph with the built-in image tool, then blends the result back only inside the landscape edit region. Each native-resolution tile of the composite is edited directly, with a labelled sheet of real photographs of the species in that tile as a second image. In the lab (experiments A1 and P1) tiles edited this way held species, layout and hardscape far better than any diffusion route, and far better than tiles anchored to a full-view edit (P2). In lab R1 (3 tiles x 3 arms x 2 attempts) species-form failures fell from 8 with the text inventory alone, and 7 with an added numbered label map, to 1 with one real reference photo per species (fern anatomy, cultivar banding, a mixed bed). The label map did not help, so the plan does not make one. Image-interior refinement and the native routes stay available; when this route fails, the previous composite is delivered with disclosed limitations.
+The finished `photo_finish` composite keeps the designed species, roots and hardscape but still reads as rendered plants. This route is **one final pass over the entire render**: the built-in image tool edits the whole composite into an ordinary real photograph, and the result is blended back inside the landscape edit region. There are no tiles and no partial results. The pass never fails a render and never falls back: its result is always delivered, with what the review saw recorded beside it.
+
+Whether a method is good enough is decided per experiment, not per render. Run it on the bench, put each view's result beside the baseline (`compare.jpg`, full view, previous composite | scene edit) and adopt it only if it looks better. If it doesn't, change the method and run again.
+
+History: tiled routes (lab P1-P4, plan schemas 1-4) were removed. Independent tiles blended across overlaps doubled leaves (P1). Tiles anchored to a low-resolution full view inherited its species swaps (P2). Strict per-tile gates dropped every tile (P3), and with looser gates the delivered views mixed photographic and rendered patches (P4). Real reference photos per species cut species-form failures from 8 to 1 (R1), so the full-view pass keeps them.
 
 ## Requirements
 
 - The Codex session runs on **gpt-6-astra with high reasoning** (the pipeline launches it that way). Use the built-in image tool (`image_gen.imagegen`, through the imagegen skill; ChatGPT sign-in, no API key). Record both in the attempt manifest and the review; the guard rejects any other model or effort.
 - Input: a view whose schema 4 `photo_finish` review passes `appearance_guard.py` (`accepted` or `completed_with_limitations`). Its composite stays immutable, and so does the original photo.
-- Pixels outside the landscape edit region stay exactly the cleaned original photo. The helper asserts it.
-- Never paste generated pixels into plant outlines (that leaves fake dirt patches). The helper gives each tile a whole area bounded by seams through the tile overlaps, never by plant outline, and blends the whole region with feathered weights.
+- Pixels outside the landscape edit region stay exactly the cleaned original photo (house, sky, street, neighbourhood). The helper asserts it.
+- Never paste generated pixels into plant outlines. The whole region takes the one edit through a feathered weight.
 
-## What counts as a failure
+## What the review records
 
-Only real failures block delivery:
+The review looks for the four real failures on the whole delivered view and records each as `pass` or a `concern` naming where and what. They are observations, not gates:
 
 1. **Plants growing out of hardscape:** a plant, foliage base or flower growing out of concrete, paving, steps, walls or other hardscape. Foliage overhanging an edge from a plant rooted in its bed is fine.
-2. **Changed hardscape:** slab outlines, joints, steps, walls, planters, edging, driveway, house or other structures with changed geometry. Making materials look more photographic is fine. Added or removed joints, new gravel strips, and moved or doubled edges fail.
+2. **Changed hardscape:** slab outlines, joints, steps, walls, planters, edging, driveway, house or other structures with changed geometry. More photographic materials are fine; added or removed joints, new gravel strips, and moved or doubled edges are concerns.
 3. **Visible seams or double images:** seams, halos at the edit region, or ghosted/doubled leaves, spikes, flowers or edges.
-4. **Species changed beyond recognition:** a plant no longer reads as its own form, or reads as a different kind of plant (a mound pine turned into grass tufts, a cactus flower turned into a daisy, an agave turned into a fern). Changes in size, outline, density, a little position, extra foliage, flower count or cultivar detail (where the variegation sits, the exact colour shade) are not species failures.
+4. **Species changed beyond recognition:** a plant no longer reads as its own form, or reads as a different kind of plant. Changes in size, outline, density, a little position, extra foliage, flower count or cultivar detail are not species concerns.
 
-Everything else is a **non-blocking defect**. Record it, because fewer defects is better and runs are compared on them, but it never stops delivery on its own. Iterate on the prompts and the attempts to reduce them.
+Everything else is a **defect** (types below). Record them all honestly: runs are compared on concerns and defects, and fewer is better.
 
 ## 1. Plant records
 
@@ -40,7 +44,7 @@ Each entry needs `common_name`, a plain-words `description` of habit and leaves,
 
 ### Reference photos
 
-Each species that is **at least 48 px on both sides** (an instance's visible bounding box, `--reference-min-px`) in some planned tile needs `reference_photos` or `reference_missing`. The plan says which species these are (it fails with their names); smaller fragments may go without. Any entry that is given is checked.
+Each species with an instance **at least 48 px on both sides** in the view (its visible bounding box, `--reference-min-px`) needs `reference_photos` or `reference_missing`. The plan fails with the names of any that lack both; smaller fragments may go without. Any entry that is given is checked.
 
 ```json
 "Agave parryi var. truncata": {"common_name": "artichoke agave", "description": "...", "bloom_exempt": "...",
@@ -56,13 +60,13 @@ Each species that is **at least 48 px on both sides** (an instance's visible bou
   "reference_missing": "no identified photo of the cultivar or species found at a garden, university, herbarium or nursery"}
 ```
 
-- Find a real photograph of the plant whose identification you can cite: a botanical garden, university or extension service, herbarium, or a nursery that names the exact plant. Prefer the exact cultivar (`cultivar_match: "exact"`); otherwise use the species (`"species"`, captioned "species photo" on the sheet so cultivar colour and banding still come from the records). Prefer a whole plant in its usual habit, in flower for flowering plants, with little else in the frame. The plant library's research records (`references[].image_url` in a `pacifica-planting-renders` bundle's research JSON) are a good first source.
-- Download it into the scene work folder, next to `RECORDS.json` (for example `WORK/references/`), and record `path` relative to `RECORDS.json`. The plan rejects absolute paths, paths outside that folder and paths inside the shared plant library (`PACIFICA_ASSETS_DIR`).
-- Record `source_page` and `image_url` (http/https), `accessed` (YYYY-MM-DD), `identification` (who identified it, and as what), `cultivar_match` and a short `usage_note`.
-- The photos are **model input only**. They stay in the scene work folder with their provenance. Never copy them into deliverables, galleries or the shared plant library.
-- No usable photo: record `reference_missing` with the reason. It is not a failure; that species is described by its records text only.
+- Find a real photograph whose identification you can cite: a botanical garden, university or extension service, herbarium, or a nursery that names the exact plant. Prefer the exact cultivar (`cultivar_match: "exact"`); otherwise the species (`"species"`, captioned "species photo" on the sheet). Prefer a whole plant in its usual habit, in flower for flowering plants, with little else in the frame. The plant library's research records (`references[].image_url`) are a good first source.
+- Download it into the scene work folder next to `RECORDS.json` (for example `WORK/references/`) and record `path` relative to `RECORDS.json`. The plan rejects absolute paths, paths outside that folder and paths inside the shared plant library (`PACIFICA_ASSETS_DIR`).
+- Record `source_page` and `image_url` (http/https), `accessed` (YYYY-MM-DD), `identification`, `cultivar_match` and a short `usage_note`.
+- The photos are **model input only**. Never copy them into deliverables, galleries or the shared plant library.
+- No usable photo: record `reference_missing` with the reason. That species is described by its records text only.
 
-When a species has several photos, its sheet shows the first `exact` one (else the first).
+When a species has several photos, the sheet shows the first `exact` one (else the first).
 
 ## 2. Freeze the plan
 
@@ -70,43 +74,32 @@ When a species has several photos, its sheet shows the first `exact` one (else t
 python scripts/scene_edit_plan.py plan --finish-review FINAL_REVIEW.json --records WORK/RECORDS.json --out WORK/scene
 ```
 
-The plan (schema 4) re-verifies the previous composite and writes `SCENE_DIR/plan.json`, `region.png` (landscape alpha and transition pixels grown by `--margin` 24 px), `region-weight.png` (raised-cosine inward feather, `--feather` 24 px), `structure.png` (the alignment classes, below) and one folder per tile under `jobs/`:
+The plan (schema 5) re-verifies the previous composite and writes `SCENE_DIR/plan.json`, `region.png` (landscape alpha and transition pixels grown by `--margin` 24 px), `region-weight.png` (raised-cosine inward feather, `--feather` 24 px) and one job, `jobs/full/`:
 
-- `tile-NN`: 1152x1024 native-resolution tiles (`--tile`) with at least 30% overlap (`--overlap`), covering the edit region plus one ramp width. Tiles without region pixels are skipped. Each has `input.png`, its crop of the 8-bit `photo_finish` composite (the CG render composited into the photo), `prompt.txt`, and `references.jpg` when any species in it has a reference photo. **The tile edits that crop directly.** At native resolution each plant is large in its tile, which is what keeps its species: in lab P2 a full-view edit (about 1536x1024 for a 3840x2560 photo) shrank small plants to a few dozen pixels and swapped species, and tiles anchored to it inherited those errors.
-- `references.jpg`: a labelled contact sheet of the tile's reference photos, one per species, each captioned with its botanical and common name. It lists the species at least `reference_min_px` (48) px on both sides in that tile that have `reference_photos`, largest visible pixel area first, at most 8, with a long edge of at most 1536 px (one image avoids tool input limits). The plan job's `references` records the threshold, each shown species (`species`, `common_name`, `pixel_area`, the hashed `photo`, `identification`, `cultivar_match`, `source_page`, `image_url`, `accessed`), the species left off (`omitted`, with reason `below_threshold`, `reference_missing` or `sheet_cap`) and the hashed `sheet`. `validate` re-derives the selection and checks the sheet against its photos.
-- `structure.png` (0 outside the region): `1` plants, and bed ground within 64 px of a plant (lenient); `2` open bed ground more than 64 px from any plant (must not gain new structure); `3` hardscape, house and other photo pixels more than 48 px from any plant (strict). Plant and bed pixels come from the renderer IDs.
+- `input.png`: the whole 8-bit composite, Lanczos-reduced to fit the image tool's largest size for the view's orientation (`--input-size`, default 1536x1024 landscape, 1024x1536 portrait; never upscaled). The job records `input_size`.
+- `prompt.txt`: the whole-view prompt (below).
+- `references.jpg`: a labelled contact sheet of the view's reference photos, one per species, captioned with the botanical and common name. It lists the species at least `reference_min_px` (48) px on both sides that have `reference_photos`, largest visible pixel area first, at most 16, with a long edge of at most 2048 px. The job's `references` records the threshold, each shown species (`species`, `common_name`, `pixel_area`, the hashed `photo`, `identification`, `cultivar_match`, `source_page`, `image_url`, `accessed`), the species left off (`omitted`, with reason `below_threshold`, `reference_missing` or `sheet_cap`) and the hashed `sheet`.
 
-The tile prompt holds only what makes a real failure: this exact crop, because neighbouring tiles are edited separately and must line up; same camera, perspective and light; hardscape kept in place with identical geometry (no added, removed, moved or doubled joints, edges, steps, walls or gravel strips); bed ground shredded bark mulch when the bed-ground pass is on; every plant rooted in its bed, never growing out of concrete, paving, steps or walls; no new pots, steps, paving, structures, text or plants in empty bed ground; every plant in place as its listed species and form at its listed position and size, where natural leaf movement, fuller foliage and a natural outline are fine but a plant is never moved, removed, replaced or merged; plants cut by the tile edge stay cut; no invented hybrid foliage; every flowering plant in full bloom. One line per species follows: botanical name (common name; description); flowers; `Instances: ID at [x, y]%, size [w, h]px`. Positions are % of the tile and sizes are projected pixels, computed from the renderer object IDs under the matte. Edge fragments down to one pixel are included. When the tile has a reference sheet, the prompt calls the composite crop the first supplied image and adds: "The second supplied image is a labelled sheet of real photographs of the species in this tile, for identification only: match each listed plant's leaves, habit and flowers to its photo; do not copy the photo's composition, background or extra plants into the scene." Prompts are deterministic, and `validate` re-derives them, so don't edit a planned prompt. `--seam-feather` (default 20 px) sets the feather at tile ownership boundaries.
-
-**Optional label map:** not built. In R1 a numbered, species-coloured outline map from the renderer IDs gave no clear gain over the text inventory (7 species-form failures against 8), and an extra image adds tool input, so the plan has no `--label-map`.
-
-**Optional anchor (`--anchor full_view`).** The plan adds a `full` job (the whole view, `input.png` + `prompt.txt`) whose accepted result is the anchor; tiles then edit `scene_edit_plan.py tile-input` crops of the upscaled anchor with a detail-only prompt, with `geometry.png` (the composite crop) as a geometry reference. Use it only when a view's tiles disagree in a way a whole-view edit would settle and its plants are large in the full view; P2 showed it is the weak link for small plants. Anchored plans get no reference sheets. The rest of this page describes the default (`anchor: none`); the anchored route keeps the schema 2 rules (full view first, its blocking findings recorded on the attempt, stop and fall back without tiles if it fails twice).
+The prompt holds what keeps the design: one pass over the entire view; same camera, framing, perspective and light; hardscape kept in place with identical geometry (no added, removed, moved or doubled joints, edges, steps, walls or gravel strips); bed ground shredded bark mulch when the bed-ground pass is on; every plant rooted in its bed; no new pots, steps, paving, structures, text or plants in empty bed ground; the house, sky, street and neighbourhood unchanged; every plant where it is as its listed species and form (natural leaf movement, fuller foliage and a natural outline are fine; never remove, replace or merge a plant); no invented hybrid foliage; every flowering plant in full bloom. Then one line per species, largest first: botanical name (common name; description); flowers; how many plants are visible and where, on a 3x3 grid of the view (`left`, `centre`, `right` × `background`, `middle ground`, `foreground`, from each plant's renderer-ID bounding-box centre), for example `3 plants: left foreground 2, centre middle ground 1`. With a sheet, the prompt names the composite the first image and adds: "The second supplied image is a labelled sheet of real photographs of the species in this view, for identification only: match each listed plant's leaves, habit and flowers to its photo; do not copy the photo's composition, background or extra plants into the scene." Prompts are deterministic and `validate` re-derives them, so don't edit a planned prompt.
 
 ## 3. Generate
 
-For each tile:
-
-1. Edit `jobs/tile-NN/input.png` with `jobs/tile-NN/prompt.txt` exactly. When the tile has `jobs/tile-NN/references.jpg`, supply it as the second image, unchanged; otherwise attach no second image. Save the returned image unchanged (about 1330x1182). Independent tiles may run concurrently.
-2. Inspect every result against its input at full size, against the four blocking checks. For a second attempt, edit the **original input** again with the planned prompt plus an appended correction (`SECOND ATTEMPT: ...`) that names what went wrong and what to keep (which plant, its correct leaf and flower form, roots and hardscape edges, and that every plant and edge stays where it is in the input). Each tile gets at most 2 attempts. Never edit a previous output. A tile that still fails a blocking check gets `selected: null`; its area keeps the previous composite.
-
-Watch for the A1 and P2 failure modes: plants or flowers on concrete, steps or paving; invented steps, pots, joints, slab grids or paving; moved or doubled hardscape edges; a plant turned into a different kind of plant (a hedgehog cactus into pads, an agave into prickly-pear pads, cactus cups into daisies, agaves into ferns); and redrawn house or street details inside the margin. Also note, as defects, hybrid foliage where two species overlap, enlarged flower masses, filled-in gaps and variegation in the wrong place.
+1. Edit `jobs/full/input.png` with `jobs/full/prompt.txt` exactly, with `jobs/full/references.jpg` as the second image when the plan made one (otherwise no second image). Save the returned image unchanged.
+2. Inspect it against the input at full size. You may make **one** second attempt: edit the **original input** again with the planned prompt plus an appended correction (`SECOND ATTEMPT: ...`) naming what went wrong and what to keep. Never edit a previous output. Select the better attempt; the pass always delivers one.
 
 Record everything in `ATTEMPTS.json`, with paths relative to it:
 
 ```json
 {"agent_model": "gpt-6-astra", "reasoning_effort": "high", "image_tool": "image_gen.imagegen",
- "jobs": {
-  "tile-01": {"attempts": [
-     {"raw": "tile-01-1.png", "prompt": "tile-01-prompt-1.txt", "reference": "../scene/jobs/tile-01/references.jpg",
-      "inspection": "agave turned into prickly-pear pads"},
-     {"raw": "tile-01-2.png", "prompt": "tile-01-prompt-2.txt", "reference": "../scene/jobs/tile-01/references.jpg",
-      "inspection": "agave rosette kept; joints unchanged"}],
-   "selected": 2},
-  "tile-02": {"attempts": [{"raw": "tile-02-1.png", "prompt": "tile-02-prompt-1.txt", "inspection": "..."}],
-   "selected": null}}}
+ "jobs": {"full": {"attempts": [
+     {"raw": "full-1.png", "prompt": "full-prompt-1.txt", "reference": "../scene/jobs/full/references.jpg",
+      "input": "../scene/jobs/full/input.png", "inspection": "agave in the left foreground turned into prickly-pear pads"},
+     {"raw": "full-2.png", "prompt": "full-prompt-2.txt", "reference": "../scene/jobs/full/references.jpg",
+      "input": "../scene/jobs/full/input.png", "inspection": "agave rosette kept; joints unchanged"}],
+   "selected": 2}}}
 ```
 
-List every planned job. `selected` is the attempt to use, or `null` to leave that area to the previous composite. Attempt 1 must use the planned prompt exactly. Attempt 2 must start with it, add a correction, and follow a recorded `inspection`. An attempt may record `input`; it must then be exactly the planned composite crop. Every attempt of a tile with a planned sheet records `"reference": "../scene/jobs/tile-01/references.jpg"` (the path relative to `ATTEMPTS.json`); it must be byte-identical to the sheet in the plan, and a tile without a planned sheet records no reference. Compose and verify check both bindings.
+Attempt 1 uses the planned prompt exactly; attempt 2 starts with it, adds a correction, and follows a recorded `inspection`. With a planned sheet, every attempt records it as `reference` (byte-identical); without one, none. A recorded `input` must be the planned input exactly.
 
 ## 4. Compose
 
@@ -114,63 +107,35 @@ List every planned job. `selected` is the attempt to use, or `null` to leave tha
 python scripts/scene_edit_compose.py compose SCENE_DIR/plan.json --attempts ATTEMPTS.json --out OUT
 ```
 
-Compose resizes each selected output back to its box (Lanczos). The aspect must match within 3%, and nothing is warped to fit.
+The selected output is resized to the view (Lanczos; the aspect must match within 3%, nothing is warped) and replaces the previous composite inside the edit region through the feathered region weight, in linear light. Outside the region the result equals the previous composite and the cleaned photo exactly. There is no alignment check and nothing is dropped.
 
-- **Base:** the previous `photo_finish` composite is the base of the scene, at full precision.
-- **Structure check (`composite_structure_v1`):** each selected tile is compared with its composite crop. A photographic re-render of CG replaces every leaf, mulch and concrete texture and lets plants move a little and fill out, so the check works on coarse luminance edge maps (area reduction, Gaussian sigma 1.5, Sobel magnitude), per `structure.png` class, in blocks of about 128 native px:
-  - *lenient* (plants and nearby bed, at 1/8 scale, about 12 px of blur): the global edge NCC must be at least **0.65**. This catches a shifted or re-laid-out tile.
-  - *open bed ground* (1/8 scale): in each block, the edge energy the tile adds where the composite has none (tile edges minus the 5 px dilated composite edges, relative to the tile's typical composite block) must be at most **0.30**. This catches a plant, pot or path invented in empty ground.
-  - *strict* (hardscape and photo pixels away from plants, 1/4 scale, about 6 px of blur): global NCC at least **0.60**; every block where the composite has structure keeps NCC at least **0.30** (lines and edges stay put); added edge energy per block at most **0.45** (no new joints, slab grids or edges).
+Outputs: `candidate.png`, `region-weight.png`, `compare.jpg` (the full-view side-by-side, previous composite | scene edit, labelled, 2400 px wide) and `scene-edit-proof.json` (`output`: the tool's `raw_size`, the `delivered_size` and the `upscale` factor, reported honestly). `scene_edit_compose.py verify OUT/scene-edit-proof.json` recomputes all of it. `scene_edit_compose.py side_by_side LEFT RIGHT --out OUT.jpg [--labels L R]` makes the same full-view comparison of any two same-size images (for example the bench baseline and a run).
 
-  Synthetic calibration at production scale (1152x1024 tiles; 8 garden layouts of 16 leaf-rosette plants on mulch with a jointed slab and a wall; the "photo" replaces every texture, shifts colour, moves each plant by up to sigma 12 px and adds 40% more leaves): normal re-renders scored lenient 0.76-0.97, open-ground added at most 0.16, strict global at least 0.97, strict worst block at least 0.51 and strict added at most 0.39, so none was rejected. Whole-content shifts of 24-40 px scored lenient at most 0.50 and strict global at most 0.35; a different layout scored lenient at most 0.50; a plant added in open ground scored 0.34-0.80 added; a joint moved 24 px scored strict block at most 0.07; the slab edge moved 30 px at most 0.17; an added joint 0.49-0.61 strict added. All were rejected. Drift tolerance: 2-3 px with 0.5% zoom rejected 1 of 8 tiles, and 4 px with 1% zoom (about 10 px at the tile edge, enough to kink a joint at a seam) 7 of 8. A **single** missing, swapped or moved plant inside dense planting is not reliably measurable this way; the visual review catches it (`species_form_recognizable`, `invented_plant`).
+Show people full-view side-by-sides only, never crops of parts of the view.
 
-  A tile that fails is not used, and its area keeps the previous composite. Per-tile values and the failed tests (`failed`) are recorded in `scene-edit-proof.json` under `alignment.tiles`.
-- **Ownership:** each pixel belongs to exactly one tile (`ownership.png` stores the tile index + 1, and 0 where no tile covers). Neighbouring tiles in a row or column split their overlap along a **minimum-cost seam**: a path across the overlap, at least `seam_feather_px` inside both tiles, through the pixels where the two sources agree most (Gaussian-blurred absolute luminance difference, zero outside the edit region, plus a small pull toward the overlap midline). Where an owner is unused, the composite is its source, so the seam runs where the used tile agrees with the composite. Sources cross-fade only in a raised-cosine band `seam_feather_px` (20 px) wide centred on each boundary. Two tiles never blend across their wide overlaps, so a disagreement cannot turn into doubled leaves.
-- **Seam metric:** along every tile-tile ownership boundary, the two neighbouring sources are compared in a band 2 x `seam_feather_px` on each side, using edge NCC at 1/4 scale (at least 64 px across the band) plus the mean absolute luminance difference. Pairs whose NCC is below 0.4 and whose sources differ by at least 2 levels on average are flagged as `likely_ghosting` under `seams.pairs`, with a `bbox` to crop. This informs the visual check; it does not replace it.
-- **Region:** the scene goes into the photo inside the edit region through the feathered region weight, in linear light. Outside the region the result equals the previous composite and the cleaned photo exactly.
-
-Outputs: `candidate.png`, `region-weight.png`, `ownership.png`, `proofs/<job>.png` (composite crop | resized output | final crop) and `scene-edit-proof.json` (`base`, `alignment`, `ownership_boundary`, `seams`, `used_tiles`). `scene_edit_compose.py verify OUT/scene-edit-proof.json` recomputes all of it, including the metrics.
-
-## 5. Review (schema 4 `scene_photographic_edit`, check set `real_failures_v1`)
+## 5. Review (schema 5 `scene_photographic_edit`, check set `real_failures_observed_v1`)
 
 ```json
-{"schema_version": 4, "method": "scene_photographic_edit", "handoff": {...}, "camera_id": "...",
+{"schema_version": 5, "method": "scene_photographic_edit", "handoff": {...}, "camera_id": "...",
  "baseline_review": {"path": "FINAL_REVIEW.json", "sha256": "..."},
  "candidate": {"path": "OUT/candidate.png", "sha256": "..."},
  "scene_edit_proof": {"path": "OUT/scene-edit-proof.json", "sha256": "..."},
  "model": {"agent_model": "gpt-6-astra", "reasoning_effort": "high", "image_tool": "image_gen.imagegen"},
  "scene_review": {"reviewer": "vision-capable-agent", "source_and_final_loaded": true, "native_size_crops_loaded": true,
-   "observations": "...", "paired_evidence": [{...}], "check_set": "real_failures_v1",
+   "observations": "...", "paired_evidence": [{...}], "check_set": "real_failures_observed_v1",
+   "attempts": 2, "selected_attempt": 2,
    "checks": {"plants_rooted_in_beds": "pass",
-              "hardscape_unchanged": "pass",
-              "no_seams_or_double_images": {"result": "fail", "where": "tile-05/06 boundary, lower bed", "observation": "doubled agave spikes"},
+              "hardscape_unchanged": {"result": "concern", "where": "front steps", "observation": "a new joint on the second tread"},
+              "no_seams_or_double_images": "pass",
               "species_form_recognizable": "pass"},
-   "defects": [{"type": "extent_change", "where": "left agave", "observation": "crown about 10% wider"},
-               {"type": "cultivar_detail", "where": "fern, lower right", "observation": "cream stripe near the leaf edge, not the centre"}],
-   "defect_count": 2, "metrics_inspected": true,
-   "jobs": [{"id": "tile-01", "attempts": 1, "selected_attempt": 1, "blocking": "pass", "observations": "...",
-             "evidence": {"path": "OUT/proofs/tile-01.png", "sha256": "..."}}]}}
+   "defects": [{"type": "extent_change", "where": "left agave", "observation": "crown about 10% wider"}],
+   "defect_count": 1}}
 ```
 
-Load the source photo, the previous composite and the final, plus native-size crops of every tile (its proof panel shows composite crop, output and final) and of every flagged seam band. Judge the four blocking checks on the **whole delivered view at native size**. Each check is `"pass"`, or a fail object with `where` (which plant, bed, edge or tile boundary) and `observation`.
+Load the source photo, the previous composite and the final, and look at native-size crops across the whole view (for your own review; they are not deliverables). Each real-failure check is `"pass"` or a concern object with `where` and `observation`. `defects` is required, even when empty, and `defect_count` must equal its length. Defect types: `movement`, `extent_change`, `extra_foliage`, `invented_plant`, `cultivar_detail`, `bloom_missing`, `colour_shift`, `other`.
 
-`defects` is required, even when empty, and `defect_count` must equal its length. Each defect is `{type, where, observation}`, with these types:
+Run `appearance_guard.py SCENE_REVIEW.json`. The scene edit is always delivered (`delivered: scene_edit_composite`). The status is `accepted` when nothing was recorded and the previous composite was accepted; otherwise `completed_with_limitations`, with the previous composite's limitations followed by every concern and defect as non-blocking rows. The result carries `real_failure_observations`, `defects`, `defect_count`, `output` and `compare`. Only integrity problems raise: missing or changed evidence, the wrong model, a broken attempt rule.
 
-- `movement`: a plant moved a little.
-- `extent_change`: a crown or outline grew or shrank.
-- `extra_foliage`: extra foliage or filled-in gaps.
-- `invented_plant`: a new plant in empty bed ground.
-- `cultivar_detail`: variegation placement or the exact shade.
-- `bloom_missing`: a flowering plant not in bloom.
-- `colour_shift`.
-- `other`.
+Keep the plan, records, manifest, raw outputs, prompts, input, compare and the review with the delivery. Reference photos and `references.jpg` stay in the scene work folder only: the delivery carries their hashes and provenance, not the third-party images.
 
-When the proof flags any seam band, set `metrics_inspected: true` after looking at those bands. Write one job row for every planned job. Each selected job needs `blocking` (`pass` or `fail`) and a readable evidence image. A selected tile marked `fail` is an error: deselect it (`selected: null`; its area keeps the previous composite) and recompose. A single tile never fails the view. Run `appearance_guard.py SCENE_REVIEW.json`:
-
-- **All four blocking checks pass:** the scene edit composite is delivered. The status is the previous composite's (`accepted`, or `completed_with_limitations` with its limitations carried). Defects go into the guard result as `defects`, `defect_count` and `non_blocking_observations`. Any `invented_plant` or `bloom_missing` defect downgrades `accepted` to `completed_with_limitations`, because they contradict the design and the in-bloom rule, and all defects are then listed in `limitations` with `blocking: false`. The other defect types are recorded only. The result also carries `tile_alignment`, `used_tiles` and `seams_flagged`.
-- **Any blocking check fails:** set `release_policy: fallback_previous_composite`, set `candidate` to the previous `photo_finish` candidate, and list `limitations` [{check, observations}] for exactly the failing blocking checks. The guard returns `completed_with_limitations` with `delivered: previous_photo_finish_composite`.
-- **The tool was unavailable or no attempt was usable** (or, in the anchored route, the anchor failed): a fallback review without `scene_edit_proof` needs only the limitation rows, for example `scene_edit_not_run`.
-
-Keep the plan, records, manifest, raw outputs, prompts, tile inputs, proofs and the review with the delivery even when the edit is rejected. Reference photos and `references.jpg` sheets stay in the scene work folder only: the delivery carries their hashes and provenance (in the plan and records), not the third-party images.
-
-Schema 3 plans (one image per tile, no reference photos; an attempt `reference` may only be the composite crop) stay verifiable. Schema 2 plans (lab P2: always anchored, nearest-tile-centre ownership, operation `scene_edit_anchor_ownership_v2`) and their reviews stay verifiable. Reviews of schema 1 plans (tiles edited from the composite crop and blended over wide overlaps, with seven checks: `species_fidelity`, `no_invented_or_hybrid_plants`, `plants_rooted_in_beds`, `hardscape_geometry_preserved`, `flowering_in_bloom`, `no_visible_seams`, `house_background_retained`, plus per-tile species findings) stay verifiable under that original contract. New plans are always schema 4.
+Plans, proofs and reviews of the removed tiled routes (schemas 1-4) are not verifiable with this version; check them with the skill commit that made them.
