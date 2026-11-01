@@ -1,8 +1,8 @@
 """Compose the built-in image tool's full-view scene edit back into the finished photo, and check its review.
 
 Plan schema 5, operation scene_edit_full_view_v1: one image-tool edit of the whole previous photo_finish composite
-(reduced to the tool's size, followed by the view's numbered plant map and its labelled reference sheet when the plan
-has them). At most two attempts: the second edits the original input again with the retry prompt built from the
+(reduced to the tool's size, followed by the view's labelled reference sheet, and by the optional numbered plant map
+before it, when the plan has them). At most two attempts: the second edits the original input again with the retry prompt built from the
 first attempt's review notes, and the attempt with the lowest ranked defects (Ben's ranking) is selected. The
 selected output is resized to the view (Lanczos; the aspect must match within 3%, nothing is warped) and replaces the
 previous composite inside the landscape edit region through the plan's raised-cosine inward feather, in linear
@@ -89,7 +89,7 @@ def check_attempts(plan, attempts, base):
     scores = [{'attempt': n, **score(v)} for n, v in sorted(notes.items())]
     if len(tries) == 2:
         require(set(notes) == {1, 2}, 'With two attempts, record the review notes of both (notes)')
-        want = retry_prompt_text(planned, retry_items(notes[1]))
+        want = retry_prompt_text(planned, retry_items(notes[1], 'labels' in job))
         require(text(tries[1]['prompt'], base) == want,
                 "Attempt 2 uses the retry prompt built from attempt 1's review notes (scene_edit_plan.py retry_prompt)")
         require(row['selected'] == best_attempt(scores),

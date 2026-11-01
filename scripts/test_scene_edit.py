@@ -22,9 +22,11 @@ from scene_edit_plan import (JOB_ID, LABEL_LINE, LABEL_OUTLINE, REFERENCE_LINE, 
 from test_contract import save
 import test_finishing
 
-PARAMS = dict(margin_px=2, feather_px=2, reference_min_px=4, label_min_px=1)
+PARAMS = dict(margin_px=2, feather_px=2, reference_min_px=4, label_min_px=1)  # the label map stays off (the default)
+MAP = dict(PARAMS, label_map=True)
 LABEL_SENTENCE = LABEL_LINE.format(ordinal='second')
-SHEET_SENTENCE = REFERENCE_LINE.format(ordinal='third')
+SHEET_SENTENCE = REFERENCE_LINE.format(ordinal='second')  # P5's order: composite, then the sheet
+SHEET_AFTER_MAP = REFERENCE_LINE.format(ordinal='third')
 SHEET_ANY = 'labelled sheet of real photographs'
 RAW_SIZE = (24, 24)  # the tool returns a smaller image than the 32x32 fixture view: delivered upscaled 1.3333x
 RECORDS = {'species': {
@@ -137,17 +139,18 @@ class SceneEditPlan(PlanFixture):
         self.assertIn('natural leaf movement, fuller foliage and a natural outline are fine', text)
         self.assertIn('Keep the house, sky, street and neighbourhood unchanged', text)
         self.assertIn('shredded bark mulch', text)
-        # Image order: the composite, the numbered plant map, the reference sheet; their sentences precede the list.
-        self.assertIn(LABEL_SENTENCE, text); self.assertIn(SHEET_SENTENCE, text)
-        self.assertLess(text.index(LABEL_SENTENCE), text.index(SHEET_SENTENCE))
+        # Default (no label map): P5's image order, the composite then the reference sheet, named before the list.
+        self.assertIn(SHEET_SENTENCE, text); self.assertNotIn('numbered map', text); self.assertNotIn('(#', text)
         self.assertLess(text.index(SHEET_SENTENCE), text.index('The planting, by species'))
-        self.assertTrue(text.splitlines()[0].endswith('foreground), with their numbers on the map:'))
+        self.assertTrue(text.splitlines()[0].endswith('foreground):'))
+        self.assertNotIn('labels', self.job); self.assertFalse(self.plan['params']['label_map'])
+        self.assertFalse((self.p / 'scene' / 'jobs' / JOB_ID / 'labels.png').exists())
         self.assertNotIn('tile', text)
         tiny = next(r for r in self.job['inventory'] if r['id'] == 'tiny')
         self.assertEqual(tiny['size_px'], [1, 1]); self.assertEqual(tiny['location'], location(tiny['position_percent']))
         self.assertNotIn('hidden', [r['id'] for r in self.job['inventory']])  # no visible pixels
-        self.assertEqual(tiny['label'], 2)
-        self.assertIn(f"flowers: many small white daisies with yellow centres. 1 plant: {tiny['location']} 1 (#2)", text)
+        self.assertEqual(tiny['label'], 2)  # the inventory keeps its labels; the prompt carries no numbers
+        self.assertIn(f"flowers: many small white daisies with yellow centres. 1 plant: {tiny['location']} 1\n", text)
         self.assertIn('Agave victoriae-reginae (Queen Victoria agave; compact dense rosette', text)
         lines = text.strip().split('\n')[1:]
         self.assertTrue(lines[0].startswith('Agave victoriae-reginae'))  # largest species first
@@ -240,16 +243,20 @@ class SceneEditReferences(PlanFixture):
         plan = self.plan_with(lambda r: r.pop('reference_photos'), 'high-threshold', reference_min_px=30)
         job = plan['jobs'][0]
         self.assertTrue(not job['references']['species'] and 'sheet' not in job['references'])
-        self.assertNotIn(SHEET_ANY, text_of(job['prompt']['path']))
-        self.assertIn(LABEL_SENTENCE, text_of(job['prompt']['path']))  # the label map is still the second image
+        text = text_of(job['prompt']['path'])
+        self.assertNotIn(SHEET_ANY, text); self.assertNotIn('numbered map', text)
+        self.assertIn('Edit target: the supplied image', text)  # no sheet and no map: the composite is the only image
         validate(plan, self.p)
-        # No sheet and no numbered plant: the composite is the only image.
-        plan = self.plan_with(lambda r: r.pop('reference_photos'), 'no-images', reference_min_px=30, label_min_px=100000)
+        # With the label map on and no sheet, the map is the second image.
+        plan = self.plan_with(lambda r: r.pop('reference_photos'), 'map-only', reference_min_px=30, label_map=True)
+        text = text_of(plan['jobs'][0]['prompt']['path'])
+        self.assertIn(LABEL_SENTENCE, text); self.assertNotIn(SHEET_ANY, text)
+        validate(plan, self.p)
+        # Map on but no plant big enough to number: no map is drawn.
+        plan = self.plan_with(lambda r: None, 'map-none', label_map=True, label_min_px=100000)
         job = plan['jobs'][0]
         self.assertNotIn('labels', job); self.assertTrue(all(r['label'] is None for r in job['inventory']))
-        text = text_of(job['prompt']['path'])
-        self.assertIn('Edit target: the supplied image', text); self.assertNotIn('numbered map', text)
-        self.assertTrue(text.splitlines()[0].endswith('foreground):')); self.assertNotIn('(#', text)
+        self.assertNotIn('numbered map', text_of(job['prompt']['path']))
         validate(plan, self.p)
 
     def test_reference_records_are_validated(self):
@@ -288,7 +295,7 @@ class SceneEditReferences(PlanFixture):
         solid(raw / 'full.png', RAW_SIZE, [90, 90, 90])
         (raw / 'full.txt').write_text(text_of(job['prompt']['path']), encoding='utf-8')
         manifest = {**MODEL, 'jobs': {JOB_ID: {'attempts': [
-            {'raw': 'full.png', 'prompt': 'full.txt', 'labels': '../missing/jobs/full/labels.png'}], 'selected': 1}}}
+            {'raw': 'full.png', 'prompt': 'full.txt'}], 'selected': 1}}}
         save(raw / 'attempts.json', manifest)
         compose(self.p / 'missing/plan.json', raw / 'attempts.json', self.p / 'missing-out')
         manifest['jobs'][JOB_ID]['attempts'][0]['reference'] = '../scene/jobs/full/references.jpg'
@@ -311,12 +318,18 @@ class SceneEditReferences(PlanFixture):
 
 
 class SceneEditLabels(PlanFixture):
-    """The numbered plant map: numbering in prompt order, the drawing, determinism and its hash binding."""
+    """The optional numbered plant map (label_map on): numbering in prompt order, the prompt, the drawing,
+    determinism, its hash binding and the attempt binding."""
+
+    def setUp(self):
+        super().setUp()
+        self.plan = prepare(self.p / 'finish-review.json', self.p / 'records.json', self.p / 'scene-map', **MAP)
+        self.job = self.plan['jobs'][0]
 
     def test_plan_freezes_a_numbered_label_map(self):
         job = self.job
         labels = Path(job['labels']['path'])
-        self.assertEqual(labels, self.p / 'scene' / 'jobs' / JOB_ID / 'labels.png')
+        self.assertEqual(labels, self.p / 'scene-map' / 'jobs' / JOB_ID / 'labels.png')
         self.assertEqual(record(labels), job['labels'])
         with Image.open(labels) as im:
             self.assertEqual(im.format, 'PNG'); self.assertEqual(list(im.size), job['input_size'])
@@ -326,7 +339,12 @@ class SceneEditLabels(PlanFixture):
         text = text_of(job['prompt']['path'])
         agave = next(r for r in job['inventory'] if r['id'] == 'agave-1')
         self.assertIn(f"1 plant: {agave['location']} 1 (#1)", text)
-        again = prepare(self.p / 'finish-review.json', self.p / 'records.json', self.p / 'scene-2', **PARAMS)
+        # Image order with the map: the composite, the map, the sheet; their sentences precede the list.
+        self.assertIn('Edit target: the first supplied image', text)
+        self.assertLess(text.index(LABEL_SENTENCE), text.index(SHEET_AFTER_MAP))
+        self.assertLess(text.index(SHEET_AFTER_MAP), text.index('The planting, by species'))
+        self.assertTrue(text.splitlines()[0].endswith('foreground), with their numbers on the map:'))
+        again = prepare(self.p / 'finish-review.json', self.p / 'records.json', self.p / 'scene-map-2', **MAP)
         self.assertEqual(again['jobs'][0]['labels']['sha256'], job['labels']['sha256'])  # deterministic
         validate(self.plan, self.p)
 
@@ -338,9 +356,31 @@ class SceneEditLabels(PlanFixture):
         tampered = copy.deepcopy(self.plan); tampered['jobs'][0]['labels'] = record(labels)
         with self.assertRaisesRegex(ValueError, 'Label map differs'): validate(tampered, self.p)
         tampered = copy.deepcopy(self.plan); del tampered['jobs'][0]['labels']
-        with self.assertRaisesRegex(ValueError, 'needs its label map'): validate(tampered, self.p)
+        with self.assertRaisesRegex(ValueError, 'needs its labels.png'): validate(tampered, self.p)
+        off = prepare(self.p / 'finish-review.json', self.p / 'records.json', self.p / 'scene-off', **PARAMS)
+        tampered = copy.deepcopy(off); tampered['jobs'][0]['labels'] = self.job['labels']
+        with self.assertRaisesRegex(ValueError, 'no label map but records one'): validate(tampered, self.p)
         tampered = copy.deepcopy(self.plan); tampered['jobs'][0]['inventory'][1]['label'] = 3
         with self.assertRaisesRegex(ValueError, 'differs: inventory'): validate(tampered, self.p)
+
+    def test_attempts_bind_the_planned_map(self):
+        raw = self.p / 'map-raw'; raw.mkdir()
+        solid(raw / 'full.png', RAW_SIZE, [90, 90, 90])
+        (raw / 'full.txt').write_text(text_of(self.job['prompt']['path']), encoding='utf-8')
+        attempt = {'raw': 'full.png', 'prompt': 'full.txt', 'reference': '../scene-map/jobs/full/references.jpg',
+                   'labels': '../scene-map/jobs/full/labels.png'}
+        for k, (row, message) in enumerate((({k: v for k, v in attempt.items() if k != 'labels'}, 'must attach the planned label map'),
+                                            (dict(attempt, labels='full.png'), 'must attach the planned label map'))):
+            save(raw / f'bad-{k}.json', {**MODEL, 'jobs': {JOB_ID: {'attempts': [row], 'selected': 1}}})
+            with self.subTest(message), self.assertRaisesRegex(ValueError, message):
+                compose(self.p / 'scene-map/plan.json', raw / f'bad-{k}.json', self.p / f'map-bad-{k}')
+        save(raw / 'ok.json', {**MODEL, 'jobs': {JOB_ID: {'attempts': [attempt], 'selected': 1}}})
+        compose(self.p / 'scene-map/plan.json', raw / 'ok.json', self.p / 'map-out')
+        # With a map, review notes may name plants by number.
+        notes = {'check_set': CHECK_SET, 'checks': dict(ALL_PASS), 'defect_count': 1, 'bloom': dict(ALL_BLOOM),
+                 'defects': [{'type': 'species_change', 'where': 'agave #1', 'observation': 'reads as an aloe'}]}
+        self.assertEqual(retry_items(notes, numbered=True)[0]['where'], 'agave #1')
+        with self.assertRaisesRegex(ValueError, 'by species and location, not by #number'): retry_items(notes)
 
     def test_numbering_follows_the_prompt_order(self):
         row = lambda i, sp, px, loc, c: {'id': i, 'species': sp, 'visible_pixels': px, 'location': loc, 'centroid_px': c}
@@ -375,7 +415,7 @@ class SceneEditCompose(PlanFixture):
         Image.fromarray(self.edit_raw()).save(self.raw / 'full-1.png')
         (self.raw / 'full-1.txt').write_text(text_of(self.job['prompt']['path']), encoding='utf-8')
         self.manifest = {**MODEL, 'jobs': {JOB_ID: {'attempts': [
-            {'raw': 'full-1.png', 'prompt': 'full-1.txt', 'inspection': 'Synthetic.', 'labels': '../scene/jobs/full/labels.png',
+            {'raw': 'full-1.png', 'prompt': 'full-1.txt', 'inspection': 'Synthetic.',
              'reference': '../scene/jobs/full/references.jpg', 'input': '../scene/jobs/full/input.png'}], 'selected': 1}}}
         save(self.raw / 'attempts.json', self.manifest)
         self.proof = compose(self.p / 'scene/plan.json', self.raw / 'attempts.json', self.p / 'scene-out')
@@ -536,8 +576,7 @@ class SceneEditCompose(PlanFixture):
             ([ok] * 3, 1, 'Record 1-2 attempts'),
             ([], None, 'Record 1-2 attempts'),
             ([ok], None, 'always delivers one'),
-            ([{k: v for k, v in ok.items() if k != 'labels'}], 1, 'must attach the planned label map'),
-            ([dict(ok, labels='full-1.png')], 1, 'must attach the planned label map'),
+            ([dict(ok, labels='full-1.png')], 1, 'no planned label map; attach none'),
             ([{k: v for k, v in ok.items() if k != 'reference'}], 1, 'must attach the planned reference sheet'),
             ([dict(ok, reference='full-1.png')], 1, 'must attach the planned reference sheet'),
             ([dict(ok, input='fake-input.png')], 1, 'not the planned full-view input')]
@@ -562,9 +601,9 @@ class SceneEditCompose(PlanFixture):
         notes = self.notes('notes.json', concerns=[('plants_rooted_in_beds', 'front step', 'a daisy grows from the tread')],
                            defects=[('invented_plant', 'centre bed', 'an extra fern'),
                                     ('bloom_missing', 'tiny daisy, left', 'no flowers'),
-                                    ('significant_movement', 'agave #1', 'moved across the bed'),
+                                    ('significant_movement', 'Queen Victoria agave, left foreground', 'moved across the bed'),
                                     ('cultivar_detail', 'left agave', 'leaves too broad for the cultivar'),
-                                    ('species_change', 'agave #1', 'reads as an aloe'),
+                                    ('species_change', 'Queen Victoria agave, left foreground', 'reads as an aloe'),
                                     ('extent_change', 'agave', 'crown wider'),
                                     ('movement', 'agave', 'shifted a little')],
                            bloom=(5, 2))
@@ -573,8 +612,8 @@ class SceneEditCompose(PlanFixture):
         fixes = [line for line in text.splitlines() if line.startswith('Fix: ')]
         self.assertEqual(fixes, [
             'Fix: front step \u2014 a daisy grows from the tread' + keep,
-            'Fix: agave #1 \u2014 reads as an aloe' + keep,
-            'Fix: agave #1 \u2014 moved across the bed' + keep,
+            'Fix: Queen Victoria agave, left foreground \u2014 reads as an aloe' + keep,
+            'Fix: Queen Victoria agave, left foreground \u2014 moved across the bed' + keep,
             'Fix: centre bed \u2014 an extra fern' + keep,
             'Fix: flowering plants \u2014 only 2 of 5 flowering plants are in bloom; show flowers on the listed flowering '
             'species, at least 60% of them (3 of 5) in bloom true to cultivar' + keep])
