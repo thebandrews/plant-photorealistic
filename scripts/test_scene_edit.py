@@ -15,12 +15,17 @@ from appearance_guard import check
 from handoff import record
 from raster import load, save as save_png
 from scene_edit_compose import (CHECK_SET, COMPARE_WIDTH, OPERATION, REAL_FAILURE_CHECKS, compose, side_by_side, verify)
-from scene_edit_plan import (JOB_ID, REFERENCE_LINE, REFERENCE_SHEET_LONG_EDGE, input_dims, location, meaningful_species,
-                             prepare, reference_sheet, region_weight, edit_region, resized, validate, view_references)
+from scene_edit_plan import (JOB_ID, LABEL_LINE, LABEL_OUTLINE, REFERENCE_LINE, REFERENCE_SHEET_LONG_EDGE, RETRY_HEADER,
+                             assign_labels, best_attempt, input_dims, label_map, location, meaningful_species, prepare,
+                             reference_sheet, region_weight, edit_region, resized, retry_items, retry_prompt,
+                             retry_prompt_text, validate, view_references)
 from test_contract import save
 import test_finishing
 
-PARAMS = dict(margin_px=2, feather_px=2, reference_min_px=4)
+PARAMS = dict(margin_px=2, feather_px=2, reference_min_px=4, label_min_px=1)
+LABEL_SENTENCE = LABEL_LINE.format(ordinal='second')
+SHEET_SENTENCE = REFERENCE_LINE.format(ordinal='third')
+SHEET_ANY = 'labelled sheet of real photographs'
 RAW_SIZE = (24, 24)  # the tool returns a smaller image than the 32x32 fixture view: delivered upscaled 1.3333x
 RECORDS = {'species': {
     'Agave victoriae-reginae': {'common_name': 'Queen Victoria agave',
@@ -127,21 +132,24 @@ class SceneEditPlan(PlanFixture):
         self.assertIn('natural leaf movement, fuller foliage and a natural outline are fine', text)
         self.assertIn('Keep the house, sky, street and neighbourhood unchanged', text)
         self.assertIn('shredded bark mulch', text)
-        self.assertIn(REFERENCE_LINE, text)
-        self.assertLess(text.index(REFERENCE_LINE), text.index('The planting, by species'))  # sheet before the list
-        self.assertTrue(text.splitlines()[0].endswith('foreground):'))
+        # Image order: the composite, the numbered plant map, the reference sheet; their sentences precede the list.
+        self.assertIn(LABEL_SENTENCE, text); self.assertIn(SHEET_SENTENCE, text)
+        self.assertLess(text.index(LABEL_SENTENCE), text.index(SHEET_SENTENCE))
+        self.assertLess(text.index(SHEET_SENTENCE), text.index('The planting, by species'))
+        self.assertTrue(text.splitlines()[0].endswith('foreground), with their numbers on the map:'))
         self.assertNotIn('tile', text)
         tiny = next(r for r in self.job['inventory'] if r['id'] == 'tiny')
         self.assertEqual(tiny['size_px'], [1, 1]); self.assertEqual(tiny['location'], location(tiny['position_percent']))
         self.assertNotIn('hidden', [r['id'] for r in self.job['inventory']])  # no visible pixels
-        self.assertIn(f"flowers: many small white daisies with yellow centres. 1 plant: {tiny['location']} 1", text)
+        self.assertEqual(tiny['label'], 2)
+        self.assertIn(f"flowers: many small white daisies with yellow centres. 1 plant: {tiny['location']} 1 (#2)", text)
         self.assertIn('Agave victoriae-reginae (Queen Victoria agave; compact dense rosette', text)
         lines = text.strip().split('\n')[1:]
         self.assertTrue(lines[0].startswith('Agave victoriae-reginae'))  # largest species first
 
     def test_plan_is_deterministic_and_frozen(self):
         again = prepare(self.p / 'finish-review.json', self.p / 'records.json', self.p / 'scene-2', **PARAMS)
-        strip = lambda job: {k: v for k, v in job.items() if k not in ('input', 'prompt', 'references')}
+        strip = lambda job: {k: v for k, v in job.items() if k not in ('input', 'prompt', 'references', 'labels')}
         self.assertEqual(strip(again['jobs'][0]), strip(self.job))
         validate(self.plan, self.p)
         tampered = copy.deepcopy(self.plan); tampered['jobs'][0]['inventory'][0]['size_px'] = [99, 99]
@@ -227,8 +235,16 @@ class SceneEditReferences(PlanFixture):
         plan = self.plan_with(lambda r: r.pop('reference_photos'), 'high-threshold', reference_min_px=30)
         job = plan['jobs'][0]
         self.assertTrue(not job['references']['species'] and 'sheet' not in job['references'])
-        self.assertNotIn(REFERENCE_LINE, text_of(job['prompt']['path']))
-        self.assertIn('Edit target: the supplied image', text_of(job['prompt']['path']))
+        self.assertNotIn(SHEET_ANY, text_of(job['prompt']['path']))
+        self.assertIn(LABEL_SENTENCE, text_of(job['prompt']['path']))  # the label map is still the second image
+        validate(plan, self.p)
+        # No sheet and no numbered plant: the composite is the only image.
+        plan = self.plan_with(lambda r: r.pop('reference_photos'), 'no-images', reference_min_px=30, label_min_px=100000)
+        job = plan['jobs'][0]
+        self.assertNotIn('labels', job); self.assertTrue(all(r['label'] is None for r in job['inventory']))
+        text = text_of(job['prompt']['path'])
+        self.assertIn('Edit target: the supplied image', text); self.assertNotIn('numbered map', text)
+        self.assertTrue(text.splitlines()[0].endswith('foreground):')); self.assertNotIn('(#', text)
         validate(plan, self.p)
 
     def test_reference_records_are_validated(self):
@@ -261,12 +277,13 @@ class SceneEditReferences(PlanFixture):
         job = plan['jobs'][0]
         self.assertEqual(job['references']['species'], []); self.assertNotIn('sheet', job['references'])
         self.assertIn('reference_missing', [o['reason'] for o in job['references']['omitted']])
-        self.assertNotIn(REFERENCE_LINE, text_of(job['prompt']['path']))
+        self.assertNotIn(SHEET_ANY, text_of(job['prompt']['path']))
         validate(plan, self.p)
         raw = self.p / 'missing-raw'; raw.mkdir()
         solid(raw / 'full.png', RAW_SIZE, [90, 90, 90])
         (raw / 'full.txt').write_text(text_of(job['prompt']['path']), encoding='utf-8')
-        manifest = {**MODEL, 'jobs': {JOB_ID: {'attempts': [{'raw': 'full.png', 'prompt': 'full.txt'}], 'selected': 1}}}
+        manifest = {**MODEL, 'jobs': {JOB_ID: {'attempts': [
+            {'raw': 'full.png', 'prompt': 'full.txt', 'labels': '../missing/jobs/full/labels.png'}], 'selected': 1}}}
         save(raw / 'attempts.json', manifest)
         compose(self.p / 'missing/plan.json', raw / 'attempts.json', self.p / 'missing-out')
         manifest['jobs'][JOB_ID]['attempts'][0]['reference'] = '../scene/jobs/full/references.jpg'
@@ -288,6 +305,60 @@ class SceneEditReferences(PlanFixture):
         with self.assertRaisesRegex(ValueError, 'Missing or changed|differs'): validate(self.plan, self.p)
 
 
+class SceneEditLabels(PlanFixture):
+    """The numbered plant map: numbering in prompt order, the drawing, determinism and its hash binding."""
+
+    def test_plan_freezes_a_numbered_label_map(self):
+        job = self.job
+        labels = Path(job['labels']['path'])
+        self.assertEqual(labels, self.p / 'scene' / 'jobs' / JOB_ID / 'labels.png')
+        self.assertEqual(record(labels), job['labels'])
+        with Image.open(labels) as im:
+            self.assertEqual(im.format, 'PNG'); self.assertEqual(list(im.size), job['input_size'])
+            drawn = np.array(im.convert('RGB'))
+        self.assertEqual([(r['id'], r['label']) for r in job['inventory']], [('agave-1', 1), ('tiny', 2)])
+        self.assertTrue(np.any(np.all(drawn == 0, axis=-1)))  # number boxes (outlines: see the drawing test)
+        text = text_of(job['prompt']['path'])
+        agave = next(r for r in job['inventory'] if r['id'] == 'agave-1')
+        self.assertIn(f"1 plant: {agave['location']} 1 (#1)", text)
+        again = prepare(self.p / 'finish-review.json', self.p / 'records.json', self.p / 'scene-2', **PARAMS)
+        self.assertEqual(again['jobs'][0]['labels']['sha256'], job['labels']['sha256'])  # deterministic
+        validate(self.plan, self.p)
+
+    def test_label_map_is_bound_to_the_plan(self):
+        labels = Path(self.job['labels']['path'])
+        drawn = np.array(Image.open(labels).convert('RGB')); drawn[0, 0] = [255, 0, 255]
+        Image.fromarray(drawn).save(labels)
+        with self.assertRaisesRegex(ValueError, 'Missing or changed'): validate(self.plan, self.p)
+        tampered = copy.deepcopy(self.plan); tampered['jobs'][0]['labels'] = record(labels)
+        with self.assertRaisesRegex(ValueError, 'Label map differs'): validate(tampered, self.p)
+        tampered = copy.deepcopy(self.plan); del tampered['jobs'][0]['labels']
+        with self.assertRaisesRegex(ValueError, 'needs its label map'): validate(tampered, self.p)
+        tampered = copy.deepcopy(self.plan); tampered['jobs'][0]['inventory'][1]['label'] = 3
+        with self.assertRaisesRegex(ValueError, 'differs: inventory'): validate(tampered, self.p)
+
+    def test_numbering_follows_the_prompt_order(self):
+        row = lambda i, sp, px, loc, c: {'id': i, 'species': sp, 'visible_pixels': px, 'location': loc, 'centroid_px': c}
+        rows = assign_labels([row('a1', 'A', 500, 'left foreground', [10, 90]), row('b1', 'B', 5000, 'centre middle ground', [50, 50]),
+                              row('a2', 'A', 500, 'right foreground', [90, 90]), row('a3', 'A', 500, 'left foreground', [5, 80]),
+                              row('a4', 'A', 50, 'left foreground', [20, 95])], 400)
+        self.assertEqual({r['id']: r['label'] for r in rows}, {'b1': 1, 'a3': 2, 'a1': 3, 'a2': 4, 'a4': None})
+
+    def test_numbers_never_overlap_and_the_view_is_dimmed(self):
+        import cv2
+        small = np.full((96, 144, 3), 200, np.uint8)
+        ids = np.zeros((192, 288), np.int32); ids[60:120, 100:180] = 7; ids[70:110, 110:170] = 8  # the same centroid
+        rows = [{'label': 1, 'pass_index': 7, 'centroid_px': [140, 90]}, {'label': 2, 'pass_index': 8, 'centroid_px': [140, 90]},
+                {'label': None, 'pass_index': 9, 'centroid_px': [10, 10]}]
+        drawn = label_map(small, ids, rows, [0, 0, 288, 192])
+        self.assertEqual(drawn.shape, small.shape)
+        self.assertTrue(np.array_equal(drawn, label_map(small, ids, rows, [0, 0, 288, 192])))  # deterministic
+        self.assertLess(int(drawn[5, 5].max()), 130)  # dimmed and desaturated away from the plants
+        self.assertTrue(np.all(drawn[30, 50] == LABEL_OUTLINE))  # plant 7's outline (native row 60, column 100)
+        count, _ = cv2.connectedComponents(np.all(drawn == 0, axis=-1).astype(np.uint8))
+        self.assertEqual(count - 1, 2)  # two separate number boxes, nudged apart, not one merged box
+
+
 class SceneEditCompose(PlanFixture):
     """The selected full-view edit replaces the composite inside the feathered region; the pass always delivers."""
     OFFSET = 30
@@ -299,7 +370,7 @@ class SceneEditCompose(PlanFixture):
         Image.fromarray(self.edit_raw()).save(self.raw / 'full-1.png')
         (self.raw / 'full-1.txt').write_text(text_of(self.job['prompt']['path']), encoding='utf-8')
         self.manifest = {**MODEL, 'jobs': {JOB_ID: {'attempts': [
-            {'raw': 'full-1.png', 'prompt': 'full-1.txt', 'inspection': 'Synthetic.',
+            {'raw': 'full-1.png', 'prompt': 'full-1.txt', 'inspection': 'Synthetic.', 'labels': '../scene/jobs/full/labels.png',
              'reference': '../scene/jobs/full/references.jpg', 'input': '../scene/jobs/full/input.png'}], 'selected': 1}}}
         save(self.raw / 'attempts.json', self.manifest)
         self.proof = compose(self.p / 'scene/plan.json', self.raw / 'attempts.json', self.p / 'scene-out')
@@ -412,20 +483,42 @@ class SceneEditCompose(PlanFixture):
         bad = copy.deepcopy(self.review); bad['model']['reasoning_effort'] = 'low'
         with self.assertRaisesRegex(ValueError, 'gpt-6-astra/high'): check(bad, self.p)
 
+    def notes(self, name, concerns=(), defects=()):
+        """Review notes of one attempt, saved next to the attempt manifest."""
+        checks = dict(ALL_PASS)
+        for check_, where, observation in concerns:
+            checks[check_] = {'result': 'concern', 'where': where, 'observation': observation}
+        defects = [{'type': t, 'where': w, 'observation': o} for t, w, o in defects]
+        save(self.raw / name, {'check_set': CHECK_SET, 'checks': checks, 'defects': defects, 'defect_count': len(defects)})
+        return name
+
+    def second_attempt(self, first_notes):
+        """Attempt 2's prompt, built by the helper from attempt 1's notes, saved as second.txt."""
+        path = self.raw / 'second.txt'
+        path.unlink(missing_ok=True)
+        retry_prompt(self.p / 'scene/plan.json', self.raw / first_notes, path)
+        return 'second.txt'
+
     def test_attempt_rules(self):
         planned = text_of(self.job['prompt']['path'])
         (self.raw / 'changed.txt').write_text(planned + ' improvised', encoding='utf-8')
-        (self.raw / 'second.txt').write_text(planned + '\nSECOND ATTEMPT: edit the ORIGINAL input; keep every agave rosette.', encoding='utf-8')
+        (self.raw / 'freehand.txt').write_text(planned + '\nSECOND ATTEMPT: edit the ORIGINAL input; keep every agave rosette.', encoding='utf-8')
         solid(self.raw / 'fake-input.png', (32, 32), [1, 2, 3])
         ok = self.manifest['jobs'][JOB_ID]['attempts'][0]
-        bare = {k: v for k, v in ok.items() if k != 'inspection'}
+        first = self.notes('notes-1.json', concerns=[('hardscape_unchanged', 'front step', 'a new joint on the tread')],
+                           defects=[('bloom_missing', 'tiny daisy, left', 'no flowers'), ('extent_change', 'agave', 'wider')])
+        better = self.notes('notes-2.json', defects=[('extent_change', 'agave', 'wider')])
+        second = self.second_attempt(first)
         cases = [
             ([dict(ok, prompt='changed.txt')], 1, 'exact planned prompt'),
-            ([bare, dict(bare, prompt='second.txt')], 2, 'recorded inspection'),
-            ([ok, bare], 2, 'adds a correction'),
+            ([ok, dict(ok, prompt=second)], 2, 'review notes of both'),
+            ([dict(ok, notes=first), dict(ok, prompt='freehand.txt', notes=better)], 2, 'retry prompt built from'),
+            ([dict(ok, notes=first), dict(ok, prompt=second, notes=better)], 1, 'fewer real-failure concerns'),
             ([ok] * 3, 1, 'Record 1-2 attempts'),
             ([], None, 'Record 1-2 attempts'),
             ([ok], None, 'always delivers one'),
+            ([{k: v for k, v in ok.items() if k != 'labels'}], 1, 'must attach the planned label map'),
+            ([dict(ok, labels='full-1.png')], 1, 'must attach the planned label map'),
             ([{k: v for k, v in ok.items() if k != 'reference'}], 1, 'must attach the planned reference sheet'),
             ([dict(ok, reference='full-1.png')], 1, 'must attach the planned reference sheet'),
             ([dict(ok, input='fake-input.png')], 1, 'not the planned full-view input')]
@@ -435,12 +528,51 @@ class SceneEditCompose(PlanFixture):
         manifest = copy.deepcopy(self.manifest); manifest['jobs']['tile-01'] = manifest['jobs'][JOB_ID]
         with self.assertRaisesRegex(ValueError, 'one planned full-view job'): self.compose_with(manifest, 'extra-job')
         manifest = copy.deepcopy(self.manifest)
-        manifest['jobs'][JOB_ID] = {'attempts': [dict(ok, inspection='Agave turned into pads.'), dict(bare, prompt='second.txt')],
-                                    'selected': 2}
+        manifest['jobs'][JOB_ID] = {'attempts': [dict(ok, notes=first), dict(ok, prompt=second, notes=better)], 'selected': 2}
         proof = self.compose_with(manifest, 'two')
         self.assertEqual(len(proof['attempts']['jobs'][0]['attempts']), 2)
         review = self.make_review(proof, 'two')
-        self.assertEqual(check(review, self.p)['selected'], 2)
+        result = check(review, self.p)
+        self.assertEqual(result['selected'], 2)
+        self.assertEqual(result['attempt_scores'], [{'attempt': 1, 'concerns': 1, 'defects': 2},
+                                                    {'attempt': 2, 'concerns': 0, 'defects': 1}])
+        self.assertEqual(check(self.review, self.p)['attempt_scores'], [])  # one attempt, no notes recorded
+
+    def test_retry_prompt_is_built_from_the_recorded_defects(self):
+        planned = text_of(self.job['prompt']['path'])
+        notes = self.notes('notes.json', concerns=[('plants_rooted_in_beds', 'front step', 'a daisy grows from the tread')],
+                           defects=[('bloom_missing', 'tiny daisy, left', 'no flowers'),
+                                    ('invented_plant', 'centre bed', 'an extra fern'),
+                                    ('cultivar_detail', 'left agave', 'leaves too broad for the cultivar'),
+                                    ('other', 'right', 'Queen Victoria agave reads as an aloe'),
+                                    ('other', 'sky', 'slightly hazy'),
+                                    ('cultivar_detail', 'bed edge', 'unnamed tuft is greener'),
+                                    ('extent_change', 'agave', 'crown wider'),
+                                    ('movement', 'agave', 'shifted a little')])
+        text = self.second_attempt(notes)
+        text = text_of(self.raw / text)
+        self.assertTrue(text.startswith(planned.rstrip('\n') + '\n\n' + RETRY_HEADER + '\n'))
+        fixes = [line for line in text.splitlines() if line.startswith('Fix: ')]
+        self.assertEqual(fixes, [
+            "Fix: front step — a daisy grows from the tread; keep everything else as in your previous result's realism",
+            "Fix: tiny daisy, left — no flowers; keep everything else as in your previous result's realism",
+            "Fix: centre bed — an extra fern; keep everything else as in your previous result's realism",
+            "Fix: left agave — leaves too broad for the cultivar; keep everything else as in your previous result's realism",
+            "Fix: right — Queen Victoria agave reads as an aloe; keep everything else as in your previous result's realism"])
+        quiet = self.notes('quiet.json', defects=[('extent_change', 'agave', 'crown wider'), ('other', 'sky', 'hazy')])
+        with self.assertRaisesRegex(ValueError, 'deliver attempt 1'):
+            retry_prompt(self.p / 'scene/plan.json', self.raw / quiet, self.raw / 'never.txt')
+        self.assertFalse((self.raw / 'never.txt').exists())
+        with self.assertRaisesRegex(ValueError, 'check_set'):
+            retry_items({'checks': dict(ALL_PASS), 'defects': [], 'defect_count': 0}, self.job['inventory'], RECORDS)
+        with self.assertRaisesRegex(ValueError, 'deliver attempt 1'):
+            retry_prompt_text(planned, [])
+
+    def test_selection_rule(self):
+        self.assertEqual(best_attempt([{'attempt': 1, 'concerns': 1, 'defects': 0}, {'attempt': 2, 'concerns': 0, 'defects': 9}]), 2)
+        self.assertEqual(best_attempt([{'attempt': 1, 'concerns': 0, 'defects': 5}, {'attempt': 2, 'concerns': 0, 'defects': 3}]), 2)
+        self.assertEqual(best_attempt([{'attempt': 1, 'concerns': 1, 'defects': 3}, {'attempt': 2, 'concerns': 1, 'defects': 3}]), 1)
+        self.assertEqual(best_attempt([{'attempt': 1, 'concerns': 0, 'defects': 2}, {'attempt': 2, 'concerns': 1, 'defects': 0}]), 1)
 
     def test_aspect_mismatch_rejected(self):
         solid(self.raw / 'wide.png', (48, 24), [0, 0, 0])

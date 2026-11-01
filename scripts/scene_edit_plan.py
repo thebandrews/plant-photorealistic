@@ -5,9 +5,15 @@ derives the landscape edit region from that composite's renderer matte and trans
 full-view job: the whole composite, downscaled to fit the image tool's largest size (`input_size`, 1536x1024 for a
 landscape view; never upscaled), with one prompt. The prompt lists every designed species with its plain-words
 records, its in-bloom flowers, how many plants of it are visible and where in the view (a 3x3 grid: left, centre or
-right; background, middle ground or foreground), computed from the actual renderer object IDs. One labelled sheet of
-real reference photographs covers the view's species (largest first, at most 16, long edge at most 2048 px).
+right; background, middle ground or foreground), computed from the actual renderer object IDs, and the numbers of its
+plants on a label map: the reduced composite, dimmed and desaturated, with every plant of at least `label_min_px`
+visible native pixels thinly outlined and numbered at its visible centroid. One labelled sheet of real reference
+photographs covers the view's species (largest first, at most 16, long edge at most 2048 px). Images go to the tool in
+this order: the composite (the edit target), the label map, the reference sheet.
 Deterministic: validate() re-derives every field. No image generation or recognition happens here.
+
+`retry_prompt` builds attempt 2's prompt from the review notes of attempt 1: the planned prompt plus a frozen
+correction block, one `Fix:` line per real-failure concern, missing bloom, invented plant or species-form drift.
 
 Plan schema 5 (operation scene_edit_full_view_v1) is the only plan this version writes or verifies. The tiled routes
 of schemas 1-4 (lab P1-P4) were removed: they delivered patchwork views that mixed photographic and rendered tiles.
@@ -33,7 +39,7 @@ MAX_ATTEMPTS = 2
 PLAN_SCHEMA = 5
 JOB_ID = 'full'
 # input_size: the image tool's largest size for the view's orientation (landscape W x H; swapped for portrait views).
-DEFAULTS = {'margin_px': 24, 'feather_px': 24, 'reference_min_px': 48, 'input_size': [1536, 1024]}
+DEFAULTS = {'margin_px': 24, 'feather_px': 24, 'reference_min_px': 48, 'label_min_px': 400, 'input_size': [1536, 1024]}
 # Reference photos: a species gets one when an instance has a visible bounding box at least reference_min_px on both
 # sides in the photo. The view gets one labelled contact sheet.
 REFERENCE_SHEET_LONG_EDGE = 2048
@@ -42,9 +48,29 @@ REFERENCE_SHEET_NAME = 'references.jpg'
 CULTIVAR_MATCHES = ('exact', 'species')
 REFERENCE_FIELDS = ('path', 'source_page', 'image_url', 'accessed', 'identification', 'cultivar_match', 'usage_note')
 REFERENCE_LINE = (
-    "The second supplied image is a labelled sheet of real photographs of the species in this view, for identification "
+    "The {ordinal} supplied image is a labelled sheet of real photographs of the species in this view, for identification "
     "only: match each listed plant's leaves, habit and flowers to its photo; do not copy the photo's composition, "
     "background or extra plants into the scene.")
+# Label map: every plant with at least label_min_px visible native pixels, outlined and numbered on the dimmed view.
+LABEL_MAP_NAME = 'labels.png'
+LABEL_LINE = (
+    "The {ordinal} supplied image is a numbered map of every plant in the view, for identification only: each number "
+    "marks one plant of the species listed for it; keep each numbered plant where it is as that species; do not draw "
+    "numbers, outlines or labels.")
+ORDINALS = ('first', 'second', 'third')
+LABEL_OUTLINE = (255, 214, 0)
+# Review notes (the scene review's real-failure observations and defects), also recorded per attempt.
+CHECK_SET = 'real_failures_observed_v1'
+REAL_FAILURE_CHECKS = ('plants_rooted_in_beds', 'hardscape_unchanged', 'no_seams_or_double_images', 'species_form_recognizable')
+DEFECT_TYPES = ('movement', 'extent_change', 'extra_foliage', 'invented_plant', 'cultivar_detail', 'bloom_missing',
+                'colour_shift', 'other')
+# Attempt 2 is made only for these: every real-failure concern, missing bloom, invented plants, and species-form drift
+# (a cultivar_detail or other defect that names a plant of the view).
+RETRY_DEFECTS = ('bloom_missing', 'invented_plant')
+SPECIES_DRIFT_DEFECTS = ('cultivar_detail', 'other')
+RETRY_HEADER = ("CORRECTIONS FOR THIS ATTEMPT. Edit the original view again with everything above, and fix these "
+                "problems the review recorded in the previous attempt:")
+RETRY_LINE = "Fix: {where} — {observation}; keep everything else as in your previous result's realism"
 COLUMNS = ('left', 'centre', 'right')
 ROWS = ('background', 'middle ground', 'foreground')
 FULL_PREAMBLE = (
@@ -110,8 +136,40 @@ def inventory(ids, visible, plants, box):
             continue
         bx0, by0, bx1, by1 = int(xx.min()), int(yy.min()), int(xx.max()) + 1, int(yy.max()) + 1
         position = [half_up(100 * (bx0 + bx1) / 2 / w), half_up(100 * (by0 + by1) / 2 / h)]
-        rows.append({'id': p['id'], 'species': p['species'], 'visible_pixels': int(len(xx)),
-                     'position_percent': position, 'size_px': [bx1 - bx0, by1 - by0], 'location': location(position)})
+        rows.append({'id': p['id'], 'species': p['species'], 'pass_index': int(p['pass_index']),
+                     'visible_pixels': int(len(xx)), 'position_percent': position, 'size_px': [bx1 - bx0, by1 - by0],
+                     'centroid_px': [half_up(float(xx.mean())), half_up(float(yy.mean()))], 'location': location(position)})
+    return rows
+
+
+def species_order(rows):
+    """Species of an inventory, largest visible pixel area first (the prompt's order)."""
+    area = {}
+    for r in rows:
+        area[r['species']] = area.get(r['species'], 0) + r['visible_pixels']
+    return sorted(area, key=lambda name: (-area[name], name))
+
+
+def location_order(rows):
+    """Locations of one species' rows, most plants first (the prompt's order)."""
+    where = {}
+    for r in rows:
+        where[r['location']] = where.get(r['location'], 0) + 1
+    return sorted(where, key=lambda loc: (-where[loc], loc))
+
+
+def assign_labels(rows, min_px):
+    """Number every plant with at least min_px visible pixels, in prompt order: species largest first, then its
+    locations (most plants first), then left to right and top to bottom. Smaller fragments get label None."""
+    n = 0
+    for name in species_order(rows):
+        mine = [r for r in rows if r['species'] == name]
+        for loc in location_order(mine):
+            for r in sorted((r for r in mine if r['location'] == loc), key=lambda r: (r['centroid_px'], r['id'])):
+                if r['visible_pixels'] >= min_px:
+                    n += 1; r['label'] = n
+                else:
+                    r['label'] = None
     return rows
 
 
@@ -264,30 +322,41 @@ def reference_sheet(entries, base=None):
 
 
 def species_line(name, record_, rows):
+    """One species: records text, flowers, and how many plants are where, with their label-map numbers, e.g.
+    `3 plants: left foreground 2 (#1, #2), centre middle ground 1 (#3)`. Unnumbered fragments are only counted."""
     flowers = record_['flowers'] if record_.get('flowers') else 'none required; preserve foliage'
-    where = {}
-    for r in rows:
-        where[r['location']] = where.get(r['location'], 0) + 1
-    places = ', '.join(f'{loc} {n}' for loc, n in sorted(where.items(), key=lambda kv: (-kv[1], kv[0])))
+    places = []
+    for loc in location_order(rows):
+        here = [r for r in rows if r['location'] == loc]
+        nums = sorted(r['label'] for r in here if r.get('label'))
+        places.append(f'{loc} {len(here)}' + (f" ({', '.join(f'#{k}' for k in nums)})" if nums else ''))
     count = len(rows)
     return (f"{name} ({record_['common_name']}; {record_['description']}); flowers: {flowers}. "
-            f"{count} plant{'s' if count != 1 else ''}: {places}")
+            f"{count} plant{'s' if count != 1 else ''}: {', '.join(places)}")
 
 
-def prompt(rows, records, mulch, sheet=False):
+def image_lines(labels, sheet):
+    """The sentences naming the supplied images after the composite: the label map, then the reference sheet."""
+    lines, n = [], 1
+    for present, line in ((labels, LABEL_LINE), (sheet, REFERENCE_LINE)):
+        if present:
+            lines.append(line.format(ordinal=ORDINALS[n])); n += 1
+    return lines
+
+
+def prompt(rows, records, mulch, sheet=False, labels=False):
     fields = dict(hardscape=records.get('hardscape') or HARDSCAPE, materials=records.get('materials') or MATERIALS,
                   ground=MULCH if mulch else NO_MULCH)
     text = FULL_PREAMBLE.format(**fields)
-    if sheet:  # the composite is the first image, the labelled reference sheet the second
-        head, tail = text.split(' The planting, by species', 1)  # the sheet sentence goes before the species list
+    if labels:
+        text = text.replace('background, middle ground or foreground):',
+                            'background, middle ground or foreground), with their numbers on the map:')
+    extra = image_lines(labels, sheet)
+    if extra:  # the composite is the first image; the image sentences go before the species list
+        head, tail = text.split(' The planting, by species', 1)
         text = (head.replace('Edit target: the supplied image', 'Edit target: the first supplied image') + ' '
-                + REFERENCE_LINE + ' The planting, by species' + tail)
-    order = []
-    for r in rows:
-        if r['species'] not in order:
-            order.append(r['species'])
-    order.sort(key=lambda s: (-sum(r['visible_pixels'] for r in rows if r['species'] == s), s))  # largest first
-    lines = [species_line(s, records['species'][s], [r for r in rows if r['species'] == s]) for s in order]
+                + ' '.join(extra) + ' The planting, by species' + tail)
+    lines = [species_line(s, records['species'][s], [r for r in rows if r['species'] == s]) for s in species_order(rows)]
     if not lines:
         lines = ['No designed plant is visible in this view; refine only bed, ground and hardscape surfaces.']
     return text + '\n' + '\n'.join(lines) + '\n'
@@ -295,9 +364,11 @@ def prompt(rows, records, mulch, sheet=False):
 
 def check_params(params):
     kept = {'margin_px': int(params['margin_px']), 'feather_px': int(params['feather_px']),
-            'reference_min_px': int(params['reference_min_px']), 'input_size': [int(v) for v in params['input_size']]}
+            'reference_min_px': int(params['reference_min_px']), 'label_min_px': int(params['label_min_px']),
+            'input_size': [int(v) for v in params['input_size']]}
     require(0 <= kept['margin_px'] <= 96 and 1 <= kept['feather_px'] <= 96, 'Bounded edit-region margin/feather required')
     require(1 <= kept['reference_min_px'] <= 512, 'Reference threshold must be 1-512 px')
+    require(1 <= kept['label_min_px'] <= 100000, 'Label threshold must be 1-100000 visible px')
     require(len(kept['input_size']) == 2 and all(256 <= v <= 4096 for v in kept['input_size']),
             'The image tool input size is two sides of 256-4096 px')
     return kept
@@ -324,18 +395,20 @@ def derive(review_path, records_path, params):
     kept = check_params(params)
     region = edit_region(alpha, transition, kept['margin_px'])
     box = [0, 0, w, h]  # the whole view: the image tool returns the view's aspect, and the region weight limits the change
-    rows = inventory(ids, alpha > 0, projected, box)
+    rows = assign_labels(inventory(ids, alpha > 0, projected, box), kept['label_min_px'])
     check_records(records, sorted({r['species'] for r in rows}))
     min_px = kept['reference_min_px']
     check_reference_records(records, records_path.parent, set(meaningful_species(rows, min_px)[0]), min_px)
     refs = view_references(rows, records, records_path.parent, min_px)
+    labelled = any(r['label'] for r in rows)
     job = {'id': JOB_ID, 'kind': 'full_view', 'box': box, 'input_size': input_dims(w, h, kept['input_size']),
            'inventory': rows, 'references': refs,
-           'prompt_text': prompt(rows, records, layers['bed_on'], bool(refs['species']))}
+           'prompt_text': prompt(rows, records, layers['bed_on'], bool(refs['species']), labelled)}
     return {'review': record(review_path), 'records': record(records_path), 'composite': record(composite),
             'cleaned_photo': record(checked(proof['cleaned_photo'], fp.parent)), 'camera_id': view['camera_id'],
             'handoff': record(hp), 'dimensions': [w, h], 'baseline_status': result['status'],
-            'params': kept, 'job': job, 'baseline_result': result}, region
+            'params': kept, 'job': job, 'baseline_result': result,
+            'plant_ids': np.where(alpha > 0, ids, 0)}, region
 
 
 def to8(a):
@@ -352,6 +425,119 @@ def input_pixels(composite, job):
     return np.array(Image.fromarray(crop).resize(size, Image.LANCZOS))
 
 
+def label_map(small, plant_ids, rows, box):
+    """The numbered plant map (RGB uint8, the input's size): the reduced composite dimmed and desaturated, each labelled
+    plant's visible pixels thinly outlined, and its number in a black box at its visible centroid, nudged to the
+    nearest free place so numbers never overlap. Deterministic."""
+    h, w = small.shape[:2]
+    x0, y0, x1, y1 = box
+    gray = small.astype(np.float32) @ np.array([.299, .587, .114], np.float32)
+    out = np.clip(np.rint((.6 * small + .4 * gray[..., None]) * .6), 0, 255).astype(np.uint8)
+    crop = plant_ids[y0:y1, x0:x1]  # nearest-neighbour reduction of the visible renderer IDs to the input size
+    ys = np.minimum((np.arange(h) + .5) * crop.shape[0] / h, crop.shape[0] - 1).astype(int)
+    xs = np.minimum((np.arange(w) + .5) * crop.shape[1] / w, crop.shape[1] - 1).astype(int)
+    ids = crop[ys][:, xs]
+    labelled = sorted((r for r in rows if r.get('label')), key=lambda r: r['label'])
+    kernel = np.ones((3, 3), np.uint8)
+    for r in labelled:
+        mask = (ids == r['pass_index']).astype(np.uint8)
+        out[(mask - cv2.erode(mask, kernel)) > 0] = LABEL_OUTLINE
+    image = Image.fromarray(out); draw = ImageDraw.Draw(image)
+    font = sheet_font(max(12, half_up(min(w, h) / 48)))
+    sx, sy = w / (x1 - x0), h / (y1 - y0)
+    spots = [(0, 0), (0, -1), (0, 1), (-1, 0), (1, 0), (-1, -1), (1, -1), (-1, 1), (1, 1), (0, -2), (0, 2), (-2, 0), (2, 0)]
+    placed = []
+    for r in labelled:
+        txt = str(r['label'])
+        l, t, rr, b = draw.textbbox((0, 0), txt, font=font)
+        bw, bh = rr - l + 4, b - t + 4
+        cx, cy = r['centroid_px'][0] * sx, r['centroid_px'][1] * sy
+        rects = []
+        for dx, dy in spots:
+            bx = int(min(max(0, round(cx - bw / 2 + dx * (bw + 2))), max(0, w - bw)))  # nudges keep a 2 px gap
+            by = int(min(max(0, round(cy - bh / 2 + dy * (bh + 2))), max(0, h - bh)))
+            rects.append((bx, by, bx + bw, by + bh))
+        free = [q for q in rects if not any(q[0] < o[2] and o[0] < q[2] and q[1] < o[3] and o[1] < q[3] for o in placed)]
+        rect = (free or rects)[0]
+        placed.append(rect)
+        draw.rectangle([rect[0], rect[1], rect[2] - 1, rect[3] - 1], fill=(0, 0, 0))
+        draw.text((rect[0] + 2 - l, rect[1] + 2 - t), txt, fill=(255, 255, 255), font=font)
+    return np.array(image)
+
+
+def check_notes(notes):
+    """Review notes of one attempt (or the scene review): the four real-failure observations ('pass', or a concern
+    naming where and what) and the defect list. Returns (concerns, defects)."""
+    require(isinstance(notes, dict) and notes.get('check_set') == CHECK_SET, f'Scene edit reviews use check_set {CHECK_SET}')
+    checks = notes.get('checks', {})
+    require(isinstance(checks, dict) and set(checks) == set(REAL_FAILURE_CHECKS),
+            'Record exactly the real-failure observations: ' + ', '.join(REAL_FAILURE_CHECKS))
+    concerns = []
+    for k in REAL_FAILURE_CHECKS:
+        v = checks[k]
+        if v == 'pass':
+            continue
+        require(isinstance(v, dict) and v.get('result') == 'concern' and v.get('where') and v.get('observation'),
+                f'Real-failure observation {k} is "pass", or {{"result": "concern", "where", "observation"}}')
+        concerns.append({'check': k, 'where': v['where'], 'observation': v['observation']})
+    defects = notes.get('defects')
+    require(isinstance(defects, list), 'Record the defects list (empty when there are none)')
+    for d in defects:
+        require(isinstance(d, dict) and d.get('type') in DEFECT_TYPES and d.get('where') and d.get('observation'),
+                'Each defect needs a type (' + ', '.join(DEFECT_TYPES) + '), where and observation')
+    require(notes.get('defect_count') == len(defects), 'defect_count must equal the number of recorded defects')
+    return concerns, defects
+
+
+def plant_names(rows, records):
+    """Lower-case words that name a plant of the view: botanical names, genera, common names and their last word."""
+    names = set()
+    for name in {r['species'] for r in rows}:
+        common = records['species'][name]['common_name']
+        names |= {name, name.split()[0], common, common.split()[-1]}
+    return sorted(n.lower() for n in names if len(n) >= 4)
+
+
+def retry_items(notes, rows, records):
+    """What attempt 2 must fix: every real-failure concern, missing bloom, invented plants, and species-form drift
+    (a cultivar_detail or other defect that names a plant of the view)."""
+    concerns, defects = check_notes(notes)
+    names = plant_names(rows, records)
+    names_plant = lambda d: any(n in f"{d['where']} {d['observation']}".lower() for n in names)
+    return concerns + [d for d in defects if d['type'] in RETRY_DEFECTS or
+                       (d['type'] in SPECIES_DRIFT_DEFECTS and names_plant(d))]
+
+
+def retry_prompt_text(planned, items):
+    """Attempt 2's prompt: the planned prompt, then the frozen correction block with one Fix line per item."""
+    require(items, 'Attempt 1 recorded no real-failure concern, missing bloom, invented plant or species-form drift; '
+                   'deliver attempt 1 (attempt 2 is only for those)')
+    fixes = [RETRY_LINE.format(where=i['where'], observation=i['observation']) for i in items]
+    return planned.rstrip('\n') + '\n\n' + RETRY_HEADER + '\n' + '\n'.join(fixes) + '\n'
+
+
+def score(notes):
+    concerns, defects = check_notes(notes)
+    return {'concerns': len(concerns), 'defects': len(defects)}
+
+
+def best_attempt(scores):
+    """Fewer real-failure concerns, then fewer defects; a tie keeps the earlier attempt."""
+    return min(scores, key=lambda s: (s['concerns'], s['defects'], s['attempt']))['attempt']
+
+
+def retry_prompt(plan_path, notes_path, out):
+    pp = Path(plan_path).resolve()
+    plan = validate(read(pp), pp.parent)[0]
+    job = plan['jobs'][0]
+    records = read(checked(plan['records'], pp.parent))
+    text = retry_prompt_text(checked(job['prompt'], pp.parent).read_text(encoding='utf-8'),
+                             retry_items(read(Path(notes_path).resolve()), job['inventory'], records))
+    out = Path(out).resolve(); require(not out.exists(), 'Use a new prompt path for attempt 2')
+    out.write_text(text, encoding='utf-8')
+    return text
+
+
 def prepare(review, records, out, **overrides):
     params = {**DEFAULTS, **{k: v for k, v in overrides.items() if v is not None}}
     derived, region = derive(review, records, params)
@@ -361,14 +547,18 @@ def prepare(review, records, out, **overrides):
     Image.fromarray(np.rint(region_weight(region, params['feather_px']) * 255).astype(np.uint8)).save(out / 'region-weight.png')
     job = derived['job']
     d = out / 'jobs' / job['id']; d.mkdir(parents=True)
-    save(d / 'input.png', input_pixels(rgb, job))
+    small = input_pixels(rgb, job)
+    save(d / 'input.png', small)
     (d / 'prompt.txt').write_text(job['prompt_text'], encoding='utf-8')
+    if any(r['label'] for r in job['inventory']):
+        Image.fromarray(label_map(small, derived['plant_ids'], job['inventory'], job['box'])).save(d / LABEL_MAP_NAME)
+        job['labels'] = record(d / LABEL_MAP_NAME)
     if job['references']['species']:
         Image.fromarray(reference_sheet(job['references']['species'])).save(d / REFERENCE_SHEET_NAME, quality=90)
         job['references']['sheet'] = record(d / REFERENCE_SHEET_NAME)
     frozen = {k: v for k, v in job.items() if k != 'prompt_text'} | {'input': record(d / 'input.png'), 'prompt': record(d / 'prompt.txt')}
     plan = {'schema_version': PLAN_SCHEMA, 'kind': KIND,
-            **{k: v for k, v in derived.items() if k not in ('job', 'baseline_result')},
+            **{k: v for k, v in derived.items() if k not in ('job', 'baseline_result', 'plant_ids')},
             'required_model': MODEL, 'image_tools': list(IMAGE_TOOLS), 'max_attempts': MAX_ATTEMPTS,
             'region': record(out / 'region.png'), 'region_weight_preview': record(out / 'region-weight.png'), 'jobs': [frozen]}
     (out / 'plan.json').write_text(json.dumps(plan, indent=2), encoding='utf-8')
@@ -395,7 +585,16 @@ def validate(plan, base):
     composite, _ = load(checked(plan['composite'], base))
     cleaned, _ = load(checked(plan['cleaned_photo'], base))
     target, _ = load(checked(job['input'], base))
-    require(np.array_equal(target, input_pixels(composite, job)), 'Planned input differs from the reduced composite')
+    small = input_pixels(composite, job)
+    require(np.array_equal(target, small), 'Planned input differs from the reduced composite')
+    if any(r['label'] for r in want['inventory']):
+        require(isinstance(job.get('labels'), dict), 'The view has numbered plants; the plan needs its label map')
+        with Image.open(checked(job['labels'], base)) as im:
+            frozen = np.array(im.convert('RGB'))
+        require(np.array_equal(frozen, label_map(small, derived['plant_ids'], want['inventory'], want['box'])),
+                'Label map differs from the composite and plant IDs')
+    else:
+        require('labels' not in job, 'The view has no numbered plant but records a label map')
     return plan, region, composite, cleaned, derived['baseline_result']
 
 
@@ -439,11 +638,22 @@ if __name__ == '__main__':
                    help="The image tool's largest landscape size (default 1536 1024; swapped for portrait views)")
     a.add_argument('--reference-min-px', type=int,
                    help='A species gets a reference photo when an instance is at least this many px on both sides (default 48)')
+    a.add_argument('--label-min-px', type=int,
+                   help='Plants with at least this many visible px are numbered on the label map (default 400)')
+    a = sub.add_parser('retry_prompt', help="Attempt 2's prompt: the planned prompt plus fixes from attempt 1's review notes")
+    a.add_argument('plan'); a.add_argument('--review-notes', required=True, help="Attempt 1's review notes JSON")
+    a.add_argument('--out', required=True)
     a = p.parse_args()
+    if a.command == 'retry_prompt':
+        text = retry_prompt(a.plan, a.review_notes, a.out)
+        print(json.dumps({'prompt': str(Path(a.out).resolve()), 'fixes': text.count('\nFix: ')}, indent=2))
+        raise SystemExit(0)
     plan = prepare(a.finish_review, a.records, a.out, margin_px=a.margin, feather_px=a.feather,
-                   input_size=a.input_size, reference_min_px=a.reference_min_px)
+                   input_size=a.input_size, reference_min_px=a.reference_min_px, label_min_px=a.label_min_px)
     job = plan['jobs'][0]
     print(json.dumps({'plan': str(Path(a.out).resolve() / 'plan.json'), 'input': job['input']['path'],
                       'input_size': job['input_size'], 'prompt': job['prompt']['path'], 'plants': len(job['inventory']),
+                      'label_map': job.get('labels', {}).get('path'),
+                      'numbered_plants': sum(1 for r in job['inventory'] if r['label']),
                       'reference_sheet': job['references'].get('sheet', {}).get('path'),
                       'reference_species': [e['species'] for e in job['references']['species']]}, indent=2))
