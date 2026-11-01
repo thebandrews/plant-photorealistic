@@ -4,7 +4,7 @@ The finished `photo_finish` composite keeps the designed species, roots and hard
 
 Whether a method is good enough is decided per experiment, not per render. Run it on the bench, put each view's result beside the baseline (`compare.jpg`, full view, previous composite | scene edit) and adopt it only if it looks better. If it doesn't, change the method and run again.
 
-History: tiled routes (lab P1-P4, plan schemas 1-4) were removed. Independent tiles blended across overlaps doubled leaves (P1). Tiles anchored to a low-resolution full view inherited its species swaps (P2). Strict per-tile gates dropped every tile (P3), and with looser gates the delivered views mixed photographic and rendered patches (P4). Real reference photos per species cut species-form failures from 8 to 1 (R1), so the full-view pass keeps them.
+History: tiled routes (lab P1-P4, plan schemas 1-4) were removed. Independent tiles blended across overlaps doubled leaves (P1). Tiles anchored to a low-resolution full view inherited its species swaps (P2). Strict per-tile gates dropped every tile (P3), and with looser gates the delivered views mixed photographic and rendered patches (P4). Real reference photos per species cut species-form failures from 8 to 1 (R1), so the full-view pass keeps them. The full-view pass (P5) is the production baseline for realness; the defect-driven second attempt aims to cut its ranked defects (below) without losing that realness.
 
 ## Requirements
 
@@ -22,7 +22,18 @@ The review looks for the four real failures on the whole delivered view and reco
 3. **Visible seams or double images:** seams, halos at the edit region, or ghosted/doubled leaves, spikes, flowers or edges.
 4. **Species changed beyond recognition:** a plant no longer reads as its own form, or reads as a different kind of plant. Changes in size, outline, density, a little position, extra foliage, flower count or cultivar detail are not species concerns.
 
-Everything else is a **defect** (types below). Record them all honestly: runs are compared on concerns and defects, and fewer is better.
+Everything else is a **defect** (types below). Record them all honestly: runs and attempts are compared on the ranked defects, and fewer is better.
+
+### Ranked defects
+
+Ben (2026-11-01): "100% of plants in bloom is not top priority. Here is the ranked priority of defects to focus on: 1: Species change, 2: significant plant movement, 3: plant addition, 4: plant percentage in bloom < 60%"
+
+1. **`species_change`:** a numbered or listed plant now reads as a different species or form (short of the real-failure concern above).
+2. **`significant_movement`:** a plant visibly relocated, for example by more than about half its own width or across a bed. Minor shifts are `movement`.
+3. **`invented_plant`:** a plant addition.
+4. **Bloom below 60%:** the review's `bloom` count, `{"flowering_plants": N, "in_bloom": M}` over the visible flowering plants. `bloom_low` is derived when M/N < 0.60.
+
+`ranked_defects` counts them in this order, after the real-failure concerns and before all other defects: `real_failure_concerns`, `species_change`, `significant_movement`, `invented_plant`, `bloom_low` (0 or 1), `other_defects`. Scores compare lexicographically (lower is better). Minor `movement`, `extent_change`, `extra_foliage`, `cultivar_detail`, per-plant `bloom_missing` and `colour_shift` are recorded but not ranked.
 
 ## 1. Plant records
 
@@ -78,28 +89,33 @@ The plan (schema 5) re-verifies the previous composite and writes `SCENE_DIR/pla
 
 - `input.png`: the whole 8-bit composite, Lanczos-reduced to fit the image tool's largest size for the view's orientation (`--input-size`, default 1536x1024 landscape, 1024x1536 portrait; never upscaled). The job records `input_size`.
 - `prompt.txt`: the whole-view prompt (below).
+- `labels.png` (label map optional; off by default (lab P6: it increased species changes and movement); `--label-map` switches it on): the numbered plant map, the size of `input.png`: the input dimmed and desaturated, every plant with at least `label_min_px` (`--label-min-px`, default 400) visible native pixels thinly outlined from the renderer IDs and numbered in a black box at its visible centroid (nudged apart so numbers never overlap). Plants are numbered in prompt order (species largest first, then their locations, then left to right); each inventory row records its `label` (`null` for smaller fragments) whether or not the map is on. The plan hashes the map and `validate` redraws it exactly.
 - `references.jpg`: a labelled contact sheet of the view's reference photos, one per species, captioned with the botanical and common name. It lists the species at least `reference_min_px` (48) px on both sides that have `reference_photos`, largest visible pixel area first, at most 16, with a long edge of at most 2048 px. The job's `references` records the threshold, each shown species (`species`, `common_name`, `pixel_area`, the hashed `photo`, `identification`, `cultivar_match`, `source_page`, `image_url`, `accessed`), the species left off (`omitted`, with reason `below_threshold`, `reference_missing` or `sheet_cap`) and the hashed `sheet`.
 
-The prompt holds what keeps the design: one pass over the entire view; same camera, framing, perspective and light; hardscape kept in place with identical geometry (no added, removed, moved or doubled joints, edges, steps, walls or gravel strips); bed ground shredded bark mulch when the bed-ground pass is on; every plant rooted in its bed; no new pots, steps, paving, structures, text or plants in empty bed ground; the house, sky, street and neighbourhood unchanged; every plant where it is as its listed species and form (natural leaf movement, fuller foliage and a natural outline are fine; never remove, replace or merge a plant); no invented hybrid foliage; every flowering plant in full bloom. Then one line per species, largest first: botanical name (common name; description); flowers; how many plants are visible and where, on a 3x3 grid of the view (`left`, `centre`, `right` × `background`, `middle ground`, `foreground`, from each plant's renderer-ID bounding-box centre), for example `3 plants: left foreground 2, centre middle ground 1`. With a sheet, the prompt names the composite the first image and adds: "The second supplied image is a labelled sheet of real photographs of the species in this view, for identification only: match each listed plant's leaves, habit and flowers to its photo; do not copy the photo's composition, background or extra plants into the scene." Prompts are deterministic and `validate` re-derives them, so don't edit a planned prompt.
+The prompt holds what keeps the design: one pass over the entire view; same camera, framing, perspective and light; hardscape kept in place with identical geometry (no added, removed, moved or doubled joints, edges, steps, walls or gravel strips); bed ground shredded bark mulch when the bed-ground pass is on; every plant rooted in its bed; no new pots, steps, paving, structures, text or plants in empty bed ground; the house, sky, street and neighbourhood unchanged; every plant where it is as its listed species and form (natural leaf movement, fuller foliage and a natural outline are fine; never remove, replace or merge a plant); no invented hybrid foliage; every flowering plant in full bloom. Then one line per species, largest first: botanical name (common name; description); flowers; how many plants are visible and where, on a 3x3 grid of the view (`left`, `centre`, `right` × `background`, `middle ground`, `foreground`, from each plant's renderer-ID bounding-box centre), for example `3 plants: left foreground 2, centre middle ground 1` (with the map on, also the plants' numbers: `left foreground 2 (#1, #2)`). The images go in this order: the composite (first, the edit target), the label map when on, then the reference sheet, and the prompt names each one before the species list: "The second supplied image is a numbered map of every plant in the view, for identification only: each number marks one plant of the species listed for it; keep each numbered plant where it is as that species; do not draw numbers, outlines or labels." and "The third supplied image is a labelled sheet of real photographs of the species in this view, for identification only: match each listed plant's leaves, habit and flowers to its photo; do not copy the photo's composition, background or extra plants into the scene." Without the map (the default) the sheet is the second image, exactly as in P5; review notes then name plants by species and location, never by number. Prompts are deterministic and `validate` re-derives them, so don't edit a planned prompt.
 
 ## 3. Generate
 
-1. Edit `jobs/full/input.png` with `jobs/full/prompt.txt` exactly, with `jobs/full/references.jpg` as the second image when the plan made one (otherwise no second image). Save the returned image unchanged.
-2. Inspect it against the input at full size. You may make **one** second attempt: edit the **original input** again with the planned prompt plus an appended correction (`SECOND ATTEMPT: ...`) naming what went wrong and what to keep. Never edit a previous output. Select the better attempt; the pass always delivers one.
+1. Edit `jobs/full/input.png` with `jobs/full/prompt.txt` exactly, attaching `jobs/full/labels.png` and then `jobs/full/references.jpg` when the plan made them, in that order. Save the returned image unchanged.
+2. Review attempt 1 as in step 5 and save its review notes (`check_set`, the four `checks`, `defects`, `defect_count`, `bloom`, optionally `ranked_defects`) as a JSON file, for example `full-notes-1.json`.
+3. Make a second attempt **only** when those notes record a real-failure concern or a ranked defect (species change, significant movement, plant addition, bloom below 60%). Build its prompt with `python scripts/scene_edit_plan.py retry_prompt SCENE_DIR/plan.json --review-notes full-notes-1.json --out full-prompt-2.txt`: the planned prompt plus a frozen block of `Fix: <where> — <observation>; keep everything else as in your previous result's realism` lines in rank order: real-failure concerns, species changes, significant movements, plant additions, then for low bloom a line asking for flowers on the listed flowering species, at least 60% of them. The tool refuses when nothing qualifies. Edit the **original input** again with the same attachments; never edit a previous output. Review attempt 2 the same way (`full-notes-2.json`).
+4. Select the attempt with the lowest `ranked_defects`; a tie keeps attempt 1. The pass always delivers one.
 
 Record everything in `ATTEMPTS.json`, with paths relative to it:
 
 ```json
 {"agent_model": "gpt-6-astra", "reasoning_effort": "high", "image_tool": "image_gen.imagegen",
  "jobs": {"full": {"attempts": [
-     {"raw": "full-1.png", "prompt": "full-prompt-1.txt", "reference": "../scene/jobs/full/references.jpg",
-      "input": "../scene/jobs/full/input.png", "inspection": "agave in the left foreground turned into prickly-pear pads"},
-     {"raw": "full-2.png", "prompt": "full-prompt-2.txt", "reference": "../scene/jobs/full/references.jpg",
-      "input": "../scene/jobs/full/input.png", "inspection": "agave rosette kept; joints unchanged"}],
+     {"raw": "full-1.png", "prompt": "full-prompt-1.txt", "labels": "../scene/jobs/full/labels.png",
+      "reference": "../scene/jobs/full/references.jpg", "input": "../scene/jobs/full/input.png",
+      "notes": "full-notes-1.json", "inspection": "agave #3 in the left foreground turned into prickly-pear pads"},
+     {"raw": "full-2.png", "prompt": "full-prompt-2.txt", "labels": "../scene/jobs/full/labels.png",
+      "reference": "../scene/jobs/full/references.jpg", "input": "../scene/jobs/full/input.png",
+      "notes": "full-notes-2.json", "inspection": "agave rosette kept; joints unchanged"}],
    "selected": 2}}}
 ```
 
-Attempt 1 uses the planned prompt exactly; attempt 2 starts with it, adds a correction, and follows a recorded `inspection`. With a planned sheet, every attempt records it as `reference` (byte-identical); without one, none. A recorded `input` must be the planned input exactly.
+Attempt 1 uses the planned prompt exactly. With two attempts, both record their review `notes`, attempt 2's prompt must be exactly the `retry_prompt` output for attempt 1's notes, and `selected` must follow the selection rule; the guard result carries each attempt's `ranked_defects` as `attempt_scores`. With a planned label map or sheet, every attempt records it as `labels` / `reference` (byte-identical); without one, none. A recorded `input` must be the planned input exactly.
 
 ## 4. Compose
 
@@ -113,10 +129,10 @@ Outputs: `candidate.png`, `region-weight.png`, `compare.jpg` (the full-view side
 
 Show people full-view side-by-sides only, never crops of parts of the view.
 
-## 5. Review (schema 5 `scene_photographic_edit`, check set `real_failures_observed_v1`)
+## 5. Review (schema 6 `scene_photographic_edit`, check set `real_failures_observed_v1`)
 
 ```json
-{"schema_version": 5, "method": "scene_photographic_edit", "handoff": {...}, "camera_id": "...",
+{"schema_version": 6, "method": "scene_photographic_edit", "handoff": {...}, "camera_id": "...",
  "baseline_review": {"path": "FINAL_REVIEW.json", "sha256": "..."},
  "candidate": {"path": "OUT/candidate.png", "sha256": "..."},
  "scene_edit_proof": {"path": "OUT/scene-edit-proof.json", "sha256": "..."},
@@ -128,14 +144,18 @@ Show people full-view side-by-sides only, never crops of parts of the view.
               "hardscape_unchanged": {"result": "concern", "where": "front steps", "observation": "a new joint on the second tread"},
               "no_seams_or_double_images": "pass",
               "species_form_recognizable": "pass"},
-   "defects": [{"type": "extent_change", "where": "left agave", "observation": "crown about 10% wider"}],
-   "defect_count": 1}}
+   "defects": [{"type": "significant_movement", "where": "agave #3", "observation": "moved to the far side of the bed"},
+               {"type": "extent_change", "where": "left agave", "observation": "crown about 10% wider"}],
+   "defect_count": 2,
+   "bloom": {"flowering_plants": 14, "in_bloom": 11},
+   "ranked_defects": {"real_failure_concerns": 1, "species_change": 0, "significant_movement": 1, "invented_plant": 0,
+                      "bloom_low": 0, "other_defects": 1}}}
 ```
 
-Load the source photo, the previous composite and the final, and look at native-size crops across the whole view (for your own review; they are not deliverables). Each real-failure check is `"pass"` or a concern object with `where` and `observation`. `defects` is required, even when empty, and `defect_count` must equal its length. Defect types: `movement`, `extent_change`, `extra_foliage`, `invented_plant`, `cultivar_detail`, `bloom_missing`, `colour_shift`, `other`.
+Load the source photo, the previous composite and the final, and look at native-size crops across the whole view (for your own review; they are not deliverables). Each real-failure check is `"pass"` or a concern object with `where` and `observation`. `defects` is required, even when empty, and `defect_count` must equal its length. Defect types: `species_change`, `significant_movement`, `invented_plant`, `movement`, `extent_change`, `extra_foliage`, `cultivar_detail`, `bloom_missing`, `colour_shift`, `other`. `bloom` is required; a recorded `bloom.bloom_low` must match M/N < 0.60, and `ranked_defects` is required and must match the concerns, defects and bloom. Schema 5 reviews (no bloom count or ranking) are not accepted.
 
-Run `appearance_guard.py SCENE_REVIEW.json`. The scene edit is always delivered (`delivered: scene_edit_composite`). The status is `accepted` when nothing was recorded and the previous composite was accepted; otherwise `completed_with_limitations`, with the previous composite's limitations followed by every concern and defect as non-blocking rows. The result carries `real_failure_observations`, `defects`, `defect_count`, `output` and `compare`. Only integrity problems raise: missing or changed evidence, the wrong model, a broken attempt rule.
+Run `appearance_guard.py SCENE_REVIEW.json`. The scene edit is always delivered (`delivered: scene_edit_composite`). The status is `accepted` when nothing was recorded and the previous composite was accepted; otherwise `completed_with_limitations`, with the previous composite's limitations followed by every concern, defect and low bloom as non-blocking rows. The result carries `real_failure_observations`, `defects`, `defect_count`, `bloom` (with `bloom_low`), `ranked_defects`, `attempt_scores`, `output` and `compare`. Only integrity problems raise: missing or changed evidence, the wrong model, a broken attempt rule.
 
-Keep the plan, records, manifest, raw outputs, prompts, input, compare and the review with the delivery. Reference photos and `references.jpg` stay in the scene work folder only: the delivery carries their hashes and provenance, not the third-party images.
+Keep the plan, records, manifest, raw outputs, prompts, attempt notes, input, label map, compare and the review with the delivery. Reference photos and `references.jpg` stay in the scene work folder only: the delivery carries their hashes and provenance, not the third-party images.
 
 Plans, proofs and reviews of the removed tiled routes (schemas 1-4) are not verifiable with this version; check them with the skill commit that made them.

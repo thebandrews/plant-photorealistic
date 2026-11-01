@@ -1,7 +1,9 @@
 """Compose the built-in image tool's full-view scene edit back into the finished photo, and check its review.
 
 Plan schema 5, operation scene_edit_full_view_v1: one image-tool edit of the whole previous photo_finish composite
-(reduced to the tool's size, with the view's labelled reference sheet as the second image when it has one). The
+(reduced to the tool's size, followed by the view's labelled reference sheet, and by the optional numbered plant map
+before it, when the plan has them). At most two attempts: the second edits the original input again with the retry prompt built from the
+first attempt's review notes, and the attempt with the lowest ranked defects (Ben's ranking) is selected. The
 selected output is resized to the view (Lanczos; the aspect must match within 3%, nothing is warped) and replaces the
 previous composite inside the landscape edit region through the plan's raised-cosine inward feather, in linear
 light. Outside the region every sample stays exactly the previous composite, which there is exactly the cleaned
@@ -20,16 +22,14 @@ from PIL import Image, ImageDraw
 
 from handoff import checked, read, record, require
 from raster import load, save, scaled_like
-from scene_edit_plan import (IMAGE_TOOLS, JOB_ID, MAX_ATTEMPTS, MODEL, region_weight, resized, sheet_font, to8,
-                             validate)
+# The four real failures (REAL_FAILURE_CHECKS) are observed and recorded on the whole delivered view; with the defects
+# they never block delivery.
+from scene_edit_plan import (BLOOM_MIN_SHARE, CHECK_SET, IMAGE_TOOLS, JOB_ID, MAX_ATTEMPTS, MODEL, REAL_FAILURE_CHECKS,
+                             best_attempt, bloom_low, check_notes, region_weight, resized, retry_items, retry_prompt_text, score,
+                             sheet_font, to8, validate)
 
 OPERATION = 'scene_edit_full_view_v1'
-REVIEW_SCHEMA = 5
-# The four real failures, observed and recorded on the whole delivered view. They never block delivery.
-CHECK_SET = 'real_failures_observed_v1'
-REAL_FAILURE_CHECKS = ('plants_rooted_in_beds', 'hardscape_unchanged', 'no_seams_or_double_images', 'species_form_recognizable')
-DEFECT_TYPES = ('movement', 'extent_change', 'extra_foliage', 'invented_plant', 'cultivar_detail', 'bloom_missing',
-                'colour_shift', 'other')
+REVIEW_SCHEMA = 6
 COMPARE_WIDTH = 2400
 COMPARE_LABELS = ('Before: previous photo composite', 'After: scene photographic edit')
 BLOCK = 256
@@ -62,7 +62,7 @@ def normalize(manifest_path):
         for n, a in enumerate(job.get('attempts', []), 1):
             row = {'attempt': n, 'raw': record(mp.parent / a['raw']), 'prompt': record(mp.parent / a['prompt']),
                    'inspection': a.get('inspection', '')}
-            for key in ('reference', 'input'):
+            for key in ('labels', 'reference', 'input', 'notes'):
                 if a.get(key):
                     row[key] = record(mp.parent / a[key])
             attempts.append(row)
@@ -72,7 +72,9 @@ def normalize(manifest_path):
 
 
 def check_attempts(plan, attempts, base):
-    """Model, attempt count, exact prompts, the input and reference bindings, the returned aspect and the selection."""
+    """Model, attempt count, exact prompts, the input, label map and reference bindings, the returned aspect, the
+    defect-driven second attempt and the selection. Returns the job row with `scores` (the ranked defects of each
+    attempt that recorded review notes)."""
     require(attempts.get('agent_model') == MODEL['agent_model'] and attempts.get('reasoning_effort') == MODEL['reasoning_effort'],
             'Scene edits must come from gpt-6-astra with high reasoning')
     require(attempts.get('image_tool') in IMAGE_TOOLS, 'Scene edits must use the built-in image tool')
@@ -82,25 +84,31 @@ def check_attempts(plan, attempts, base):
     require([a['attempt'] for a in tries] == list(range(1, len(tries) + 1)), 'Attempts are numbered in order')
     require(row['selected'] in range(1, len(tries) + 1), 'Select the attempt to deliver; the full-view pass always delivers one')
     planned = text(job['prompt'], base)
-    sheet = job['references'].get('sheet')
+    require(text(tries[0]['prompt'], base) == planned, 'Attempt 1 must use the exact planned prompt')
+    notes = {a['attempt']: read(checked(a['notes'], base)) for a in tries if a.get('notes')}
+    scores = [{'attempt': n, **score(v)} for n, v in sorted(notes.items())]
+    if len(tries) == 2:
+        require(set(notes) == {1, 2}, 'With two attempts, record the review notes of both (notes)')
+        want = retry_prompt_text(planned, retry_items(notes[1], 'labels' in job))
+        require(text(tries[1]['prompt'], base) == want,
+                "Attempt 2 uses the retry prompt built from attempt 1's review notes (scene_edit_plan.py retry_prompt)")
+        require(row['selected'] == best_attempt(scores),
+                'Select the attempt with the lowest ranked defects (concerns, species changes, significant movements, '
+                'plant additions, bloom below 60%, other defects; a tie keeps attempt 1)')
+    for name, key, path in (('label map', 'labels', 'labels.png'), ('reference sheet', 'reference', 'references.jpg')):
+        want = job.get('labels') if key == 'labels' else job['references'].get('sheet')
+        for a in tries:
+            if want:
+                require(a.get(key) and checked(a[key], base) and a[key]['sha256'] == want['sha256'],
+                        f"Attempt {a['attempt']} must attach the planned {name} (jobs/{JOB_ID}/{path})")
+            else:
+                require(not a.get(key), f'The view has no planned {name}; attach none')
     for a in tries:
-        used = text(a['prompt'], base)
-        if a['attempt'] == 1:
-            require(used == planned, 'Attempt 1 must use the exact planned prompt')
-        else:
-            require(tries[0].get('inspection'), 'Attempt 2 follows a recorded inspection of attempt 1')
-            require(used.startswith(planned) and len(used[len(planned):].strip()) >= 20 and used != text(tries[0]['prompt'], base),
-                    'Attempt 2 keeps the planned prompt and adds a correction')
-        if sheet:
-            require(a.get('reference') and checked(a['reference'], base) and a['reference']['sha256'] == sheet['sha256'],
-                    f"Attempt {a['attempt']} must attach the planned reference sheet (jobs/{JOB_ID}/references.jpg)")
-        else:
-            require(not a.get('reference'), 'The view has no planned reference sheet; attach no reference')
         if a.get('input'):  # attempt 2 edits the original input again, never a previous output
             got, _ = load(checked(a['input'], base)); want, _ = load(checked(job['input'], base))
             require(np.array_equal(got, want), 'The attempt input is not the planned full-view input')
         resized(checked(a['raw'], base), job['box'])
-    return row
+    return {**row, 'scores': scores}
 
 
 def reconstruct(plan, region, composite, row, base):
@@ -192,25 +200,9 @@ def verify(proof, base):
 
 def observations(vision):
     """The four real-failure observations ('pass', or a concern naming where and what) and the defect list."""
-    require(vision.get('check_set') == CHECK_SET, f'Scene edit reviews use check_set {CHECK_SET}')
-    checks = vision.get('checks', {})
-    require(isinstance(checks, dict) and set(checks) == set(REAL_FAILURE_CHECKS),
-            'Record exactly the real-failure observations: ' + ', '.join(REAL_FAILURE_CHECKS))
-    concerns = []
-    for k in REAL_FAILURE_CHECKS:
-        v = checks[k]
-        if v == 'pass':
-            continue
-        require(isinstance(v, dict) and v.get('result') == 'concern' and v.get('where') and v.get('observation'),
-                f'Real-failure observation {k} is "pass", or {{"result": "concern", "where", "observation"}}')
-        concerns.append({'check': k, 'observations': f"{v['where']}: {v['observation']}", 'blocking': False})
-    defects = vision.get('defects')
-    require(isinstance(defects, list), 'Record the defects list (empty when there are none)')
-    for d in defects:
-        require(isinstance(d, dict) and d.get('type') in DEFECT_TYPES and d.get('where') and d.get('observation'),
-                'Each defect needs a type (' + ', '.join(DEFECT_TYPES) + '), where and observation')
-    require(vision.get('defect_count') == len(defects), 'defect_count must equal the number of recorded defects')
-    return concerns, defects
+    concerns, defects, bloom = check_notes(vision, require_ranked=True)
+    return [{'check': c['check'], 'observations': f"{c['where']}: {c['observation']}", 'blocking': False}
+            for c in concerns], defects, bloom
 
 
 def defect_rows(defects):
@@ -219,11 +211,12 @@ def defect_rows(defects):
 
 
 def check_review(data, base):
-    """Schema 5 scene_photographic_edit review. The full-view edit is always delivered; real-failure concerns and
-    defects are recorded (status completed_with_limitations), never a reason to fall back. Only integrity failures
-    (missing or changed evidence, wrong model, an attempt rule broken) raise."""
+    """Schema 6 scene_photographic_edit review. The full-view edit is always delivered; real-failure concerns,
+    defects and a bloom share below 60% are recorded (status completed_with_limitations) and ranked, never a reason
+    to fall back. Only integrity failures (missing or changed evidence, wrong model, an attempt rule broken) raise."""
     require(data.get('schema_version') == REVIEW_SCHEMA,
-            'Only schema 5 full-view scene edit reviews are supported; the tiled schema 4 route was removed')
+            'Only schema 6 full-view scene edit reviews are supported (schema 5 lacked the bloom count and ranked '
+            'defects; the tiled schema 4 route was removed)')
     require('release_policy' not in data, 'The full-view scene edit has no fallback release policy; it is always delivered')
     brp = checked(data['baseline_review'], base); previous = read(brp)
     require(previous.get('schema_version') == 4 and previous.get('method') == 'photo_finish', 'Previous composite needs its schema 4 photo_finish review')
@@ -245,17 +238,24 @@ def check_review(data, base):
             'The review must match the recorded attempts and selection')
     from botanical_refinement import images
     images(vision.get('paired_evidence'), base)
-    concerns, defects = observations(vision)
+    concerns, defects, bloom = observations(vision)
     observed = concerns + defect_rows(defects)
+    if bloom_low(bloom):
+        observed.append({'check': 'defect: bloom_low', 'blocking': False,
+                         'observations': f"{bloom['in_bloom']} of {bloom['flowering_plants']} flowering plants in bloom "
+                                         f"(below {BLOOM_MIN_SHARE:.0%})"})
     limited = bool(observed) or baseline['status'] == 'completed_with_limitations'
     return {'status': 'completed_with_limitations' if limited else 'accepted', 'method': 'scene_photographic_edit',
             'camera_id': data['camera_id'], 'delivered': 'scene_edit_composite', 'scene_edit_status': 'delivered',
             'limitations': baseline.get('limitations', []) + observed,
             'previous_composite_status': baseline['status'], 'previous_composite_limitations': baseline.get('limitations', []),
             'model': data.get('model'), 'attempts': len(row['attempts']), 'selected': row['selected'],
+            'attempt_scores': row['scores'],
             'check_set': CHECK_SET,
             'real_failure_observations': {k: 'pass' if vision['checks'][k] == 'pass' else 'concern' for k in REAL_FAILURE_CHECKS},
-            'defects': defects, 'defect_count': len(defects), 'non_blocking_observations': observed,
+            'defects': defects, 'defect_count': len(defects), 'bloom': {**bloom, 'bloom_low': bloom_low(bloom)},
+            'ranked_defects': vision['ranked_defects'],  # checked against the concerns, defects and bloom
+            'non_blocking_observations': observed,
             'output': proof['output'], 'compare': proof['compare'],
             'photo_background_composited': True, 'bed_ground': baseline.get('bed_ground'),
             'landscape_evidence_counts': baseline.get('landscape_evidence_counts'),
