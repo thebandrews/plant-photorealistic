@@ -212,15 +212,20 @@ class SceneEditReferences(PlanFixture):
         records['species']['Species 05'] = {'common_name': 'plant 5', 'reference_missing': 'no identified photo found'}
         refs = view_references(rows, records, self.p, 48)
         shown = [e['species'] for e in refs['species']]
-        self.assertEqual(len(shown), 16); self.assertEqual(shown[0], 'Species 19'); self.assertNotIn('Species 05', shown)
+        self.assertEqual(shown, [f'Species {k:02d}' for k in range(19, 10, -1)])  # the 9 largest
         self.assertEqual([(o['species'], o['reason']) for o in refs['omitted']],
-                         [('Species 05', 'reference_missing'), ('Species 02', 'sheet_cap'), ('Species 01', 'sheet_cap'),
-                          ('Species 00', 'sheet_cap')])
+                         [(f'Species {k:02d}', 'reference_missing' if k == 5 else 'sheet_cap') for k in range(10, -1, -1)])
         self.assertTrue(all(e['cultivar_match'] == 'exact' and e['photo'] == record(self.p / 'refs' / 'agave-exact.png')
                             for e in refs['species']))  # the exact-cultivar photo is preferred
         sheet = reference_sheet(refs['species'])
         self.assertLessEqual(max(sheet.shape[:2]), REFERENCE_SHEET_LONG_EDGE)
-        self.assertEqual(sheet.shape[1], 4 * 512)
+        self.assertEqual(sheet.shape[1], 3 * 682)
+        # a whole-plant photo wins over an exact-cultivar leaf close-up; an unknown `shows` is refused
+        photos = records['species']['Species 19']['reference_photos']
+        photos[1]['shows'] = 'leaf'; photos[0]['shows'] = 'whole_plant'
+        self.assertEqual(view_references(rows, records, self.p, 48)['species'][0]['photo'], record(self.p / 'refs' / 'agave-species.png'))
+        photos[0]['shows'] = 'leaf'
+        self.assertEqual(view_references(rows, records, self.p, 48)['species'][0]['cultivar_match'], 'exact')
         one = reference_sheet(refs['species'][:1])
         self.assertEqual(one.shape[1], 768); self.assertLess(int(one.min()), 30)  # caption text drawn
         # A higher threshold: the agave is small, so it needs no reference and the view gets no sheet.

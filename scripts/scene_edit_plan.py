@@ -33,13 +33,14 @@ MAX_ATTEMPTS = 2
 PLAN_SCHEMA = 5
 JOB_ID = 'full'
 # input_size: the image tool's largest size for the view's orientation (landscape W x H; swapped for portrait views).
-DEFAULTS = {'margin_px': 24, 'feather_px': 24, 'reference_min_px': 48, 'input_size': [1536, 1024]}
+DEFAULTS = {'margin_px': 24, 'feather_px': 24, 'reference_min_px': 100, 'input_size': [1536, 1024]}
 # Reference photos: a species gets one when an instance has a visible bounding box at least reference_min_px on both
 # sides in the photo. The view gets one labelled contact sheet.
 REFERENCE_SHEET_LONG_EDGE = 2048
-REFERENCE_SHEET_MAX_SPECIES = 16
+REFERENCE_SHEET_MAX_SPECIES = 9  # 3x3: each photo about 680 px wide on the 2048 px sheet
 REFERENCE_SHEET_NAME = 'references.jpg'
 CULTIVAR_MATCHES = ('exact', 'species')
+PHOTO_SHOWS = ('whole_plant', 'leaf', 'flower', 'detail')  # optional `shows`; the sheet prefers whole_plant
 REFERENCE_FIELDS = ('path', 'source_page', 'image_url', 'accessed', 'identification', 'cultivar_match', 'usage_note')
 REFERENCE_LINE = (
     "The second supplied image is a labelled sheet of real photographs of the species in this view, for identification "
@@ -159,6 +160,7 @@ def check_reference_photo(photo, name, records_dir):
     except (TypeError, ValueError):
         raise ValueError(f'Give the access date (YYYY-MM-DD) of the {where}')
     require(photo['cultivar_match'] in CULTIVAR_MATCHES, f'cultivar_match of the {where} is exact or species')
+    require(photo.get('shows', 'whole_plant') in PHOTO_SHOWS, f'shows of the {where} is one of ' + ', '.join(PHOTO_SHOWS))
     require(isinstance(photo['identification'], str) and isinstance(photo['usage_note'], str),
             f'Give who identified the {where} and a usage note')
     try:
@@ -192,7 +194,7 @@ def check_reference_records(records, records_dir, required, min_px):
 
 def view_references(rows, records, records_dir, min_px):
     """The species references of the view: which species appear on its sheet (largest area first, one photo each, the
-    first exact-cultivar photo if any), and which are left off and why."""
+    whole-plant photo first, then the exact cultivar), and which are left off and why."""
     big, small, area = meaningful_species(rows, min_px)
     shown, omitted = [], [{'species': n, 'reason': 'below_threshold', 'pixel_area': area[n]} for n in small]
     for name in big:
@@ -204,9 +206,10 @@ def view_references(rows, records, records_dir, min_px):
             omitted.append({'species': name, 'reason': 'sheet_cap', 'pixel_area': area[name]})
             continue
         photos = r['reference_photos']
-        photo = next((q for q in photos if q['cultivar_match'] == 'exact'), photos[0])
+        photo = min(photos, key=lambda q: (q.get('shows') not in (None, 'whole_plant'), q['cultivar_match'] != 'exact'))
         shown.append({'species': name, 'common_name': r['common_name'], 'pixel_area': area[name],
                       'photo': record(records_dir / photo['path']),
+                      'shows': photo.get('shows', 'whole_plant'),
                       **{k: photo[k] for k in ('identification', 'cultivar_match', 'source_page', 'image_url', 'accessed')}})
     return {'min_px': min_px, 'species': shown, 'omitted': omitted}
 
@@ -438,7 +441,7 @@ if __name__ == '__main__':
     a.add_argument('--input-size', type=int, nargs=2, metavar=('W', 'H'),
                    help="The image tool's largest landscape size (default 1536 1024; swapped for portrait views)")
     a.add_argument('--reference-min-px', type=int,
-                   help='A species gets a reference photo when an instance is at least this many px on both sides (default 48)')
+                   help='A species gets a reference photo when an instance is at least this many px on both sides (default 100)')
     a = p.parse_args()
     plan = prepare(a.finish_review, a.records, a.out, margin_px=a.margin, feather_px=a.feather,
                    input_size=a.input_size, reference_min_px=a.reference_min_px)
