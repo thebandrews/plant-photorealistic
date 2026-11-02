@@ -20,7 +20,7 @@ from scene_edit_plan import (JOB_ID, REFERENCE_LINE, REFERENCE_SHEET_LONG_EDGE, 
 from test_contract import save
 import test_finishing
 
-PARAMS = dict(margin_px=2, feather_px=2, reference_min_px=4)
+PARAMS = dict(margin_px=2, feather_px=2, reference_min_px=4, specimen_min_px=4)
 RAW_SIZE = (24, 24)  # the tool returns a smaller image than the 32x32 fixture view: delivered upscaled 1.3333x
 RECORDS = {'species': {
     'Agave victoriae-reginae': {'common_name': 'Queen Victoria agave',
@@ -134,10 +134,17 @@ class SceneEditPlan(PlanFixture):
         tiny = next(r for r in self.job['inventory'] if r['id'] == 'tiny')
         self.assertEqual(tiny['size_px'], [1, 1]); self.assertEqual(tiny['location'], location(tiny['position_percent']))
         self.assertNotIn('hidden', [r['id'] for r in self.job['inventory']])  # no visible pixels
-        self.assertIn(f"flowers: many small white daisies with yellow centres. 1 plant: {tiny['location']} 1 (1 {size_class([1, 1], self.plan['dimensions'])})", text)
-        n = len(self.job['inventory']); s = len({r['species'] for r in self.job['inventory']})
-        self.assertTrue(text.strip().splitlines()[-1].startswith(f'In total {n} plant'))
-        self.assertIn(f'{s} species. The edited view shows exactly these plants: none added, none lost', text)
+        # the 1 px daisy is below the specimen size: a drift by location, never counted one by one
+        self.assertIn(f"flowers: many small white daisies with yellow centres. A low drift of small plants and fragments "
+                      f"only: {tiny['location']}", text)
+        scale = self.job['input_size'][0] / self.plan['dimensions'][0]
+        big = [r for r in self.job['inventory'] if min(r['size_px']) * scale >= PARAMS['specimen_min_px']]
+        self.assertTrue(big and 'tiny' not in [r['id'] for r in big])
+        total = text.strip().splitlines()[-1]
+        self.assertTrue(total.startswith(f"In total {len(big)} plant{'s' if len(big) != 1 else ''} of "
+                                         f"{len({r['species'] for r in big})} species"), total)
+        self.assertIn('The edited view keeps exactly these plants: none added, none lost', total)
+        self.assertIn('Drifts stay low drifts of their own species in the same places, never new specimen plants.', total)
         self.assertIn('Agave victoriae-reginae (Queen Victoria agave; compact dense rosette', text)
         lines = text.strip().split('\n')[1:]
         self.assertTrue(lines[0].startswith('Agave victoriae-reginae'))  # largest species first

@@ -33,7 +33,9 @@ MAX_ATTEMPTS = 2
 PLAN_SCHEMA = 5
 JOB_ID = 'full'
 # input_size: the image tool's largest size for the view's orientation (landscape W x H; swapped for portrait views).
-DEFAULTS = {'margin_px': 24, 'feather_px': 24, 'reference_min_px': 48, 'input_size': [1536, 1024]}
+DEFAULTS = {'margin_px': 24, 'feather_px': 24, 'reference_min_px': 48, 'specimen_min_px': 40, 'input_size': [1536, 1024]}
+# Specimens: plants whose visible bounding box is at least specimen_min_px on both sides in the image tool's input are
+# listed one by one; smaller plants and fragments of a species are described as drifts, by location only.
 # Reference photos: a species gets one when an instance has a visible bounding box at least reference_min_px on both
 # sides in the photo. The view gets one labelled contact sheet.
 REFERENCE_SHEET_LONG_EDGE = 2048
@@ -60,9 +62,10 @@ FULL_PREAMBLE = (
     "cultivar. The planting, by species, with how many plants are visible and where they are in the view (left, centre "
     "or right; background, middle ground or foreground):")
 SIZES = ((.03, 'tiny'), (.10, 'small'), (.25, 'medium'), (float('inf'), 'large'))  # share of the view side
-TOTAL_LINE = ("In total {n} plants of {s} species. The edited view shows exactly these plants: none added, none lost, "
-              "each its listed species at its listed size and in its place; a plant cut off by the view edge or behind "
-              "another plant stays partly hidden.")
+TOTAL_LINE = ("In total {n} plant{p} of {s} species {are} listed one by one. The edited view keeps exactly these plants: "
+              "none added, none lost, each its listed species at its listed size and in its place; a plant cut off by the "
+              "view edge or behind another plant stays partly hidden. Drifts stay low drifts of their own species in the "
+              "same places, never new specimen plants.")
 MULCH = 'Ground inside beds is shredded bark mulch.'
 NO_MULCH = 'Ground inside beds keeps its existing designed material.'
 HARDSCAPE = 'concrete, steps, walls, planters, edging and the house'
@@ -273,10 +276,20 @@ def size_class(size_px, dims):
     return next(name for limit, name in SIZES if share < limit)
 
 
-def species_line(name, record_, rows, dims):
+def species_line(name, record_, rows, dims, specimen):
+    """One species: its specimens one by one (location and size), and its small plants and fragments as drifts."""
     flowers = record_['flowers'] if record_.get('flowers') else 'none required; preserve foliage'
-    where = {}
+    head = f"{name} ({record_['common_name']}; {record_['description']}); flowers: {flowers}. "
+    big = [r for r in rows if specimen(r)]
+    drift = {}
     for r in rows:
+        if not specimen(r):
+            drift[r['location']] = drift.get(r['location'], 0) + 1
+    drift_places = ', '.join(loc for loc, _ in sorted(drift.items(), key=lambda kv: (-kv[1], kv[0])))
+    if not big:
+        return head + f"A low drift of small plants and fragments only: {drift_places}"
+    where = {}
+    for r in big:
         where.setdefault(r['location'], []).append(size_class(r['size_px'], dims))
     order = {z: k for k, (_, z) in enumerate(SIZES)}
     def place(loc, sizes):
@@ -284,12 +297,12 @@ def species_line(name, record_, rows, dims):
         counts = {z: sizes.count(z) for z in sizes}
         return f"{loc} {len(sizes)} (" + ', '.join(f'{n} {z}' for z, n in counts.items()) + ')'
     places = ', '.join(place(loc, z) for loc, z in sorted(where.items(), key=lambda kv: (-len(kv[1]), kv[0])))
-    count = len(rows)
-    return (f"{name} ({record_['common_name']}; {record_['description']}); flowers: {flowers}. "
-            f"{count} plant{'s' if count != 1 else ''}: {places}")
+    count = len(big)
+    text = head + f"{count} plant{'s' if count != 1 else ''}: {places}"
+    return text + (f"; plus a low drift of small plants and fragments: {drift_places}" if drift else '')
 
 
-def prompt(rows, records, mulch, dims, sheet=False):
+def prompt(rows, records, mulch, dims, input_size, specimen_min_px, sheet=False):
     fields = dict(hardscape=records.get('hardscape') or HARDSCAPE, materials=records.get('materials') or MATERIALS,
                   ground=MULCH if mulch else NO_MULCH)
     text = FULL_PREAMBLE.format(**fields)
@@ -297,24 +310,29 @@ def prompt(rows, records, mulch, dims, sheet=False):
         head, tail = text.split(' The planting, by species', 1)  # the sheet sentence goes before the species list
         text = (head.replace('Edit target: the supplied image', 'Edit target: the first supplied image') + ' '
                 + REFERENCE_LINE + ' The planting, by species' + tail)
-    order = []
+    scale = input_size[0] / dims[0]
+    specimen = lambda r: min(r['size_px']) * scale >= specimen_min_px
+    area = {}
     for r in rows:
-        if r['species'] not in order:
-            order.append(r['species'])
-    order.sort(key=lambda s: (-sum(r['visible_pixels'] for r in rows if r['species'] == s), s))  # largest first
-    lines = [species_line(s, records['species'][s], [r for r in rows if r['species'] == s], dims) for s in order]
+        area[r['species']] = area.get(r['species'], 0) + r['visible_pixels']
+    has = {r['species'] for r in rows if specimen(r)}
+    order = sorted(area, key=lambda n: (n not in has, -area[n], n))  # species with specimens first, largest first
+    lines = [species_line(n, records['species'][n], [r for r in rows if r['species'] == n], dims, specimen) for n in order]
     if not lines:
         lines = ['No designed plant is visible in this view; refine only bed, ground and hardscape surfaces.']
     else:
-        lines.append(TOTAL_LINE.format(n=len(rows), s=len(order)))
+        n = sum(1 for r in rows if specimen(r))
+        lines.append(TOTAL_LINE.format(n=n, p='s' if n != 1 else '', s=len(has), are='are' if n != 1 else 'is'))
     return text + '\n' + '\n'.join(lines) + '\n'
 
 
 def check_params(params):
     kept = {'margin_px': int(params['margin_px']), 'feather_px': int(params['feather_px']),
-            'reference_min_px': int(params['reference_min_px']), 'input_size': [int(v) for v in params['input_size']]}
+            'reference_min_px': int(params['reference_min_px']), 'specimen_min_px': int(params['specimen_min_px']),
+            'input_size': [int(v) for v in params['input_size']]}
     require(0 <= kept['margin_px'] <= 96 and 1 <= kept['feather_px'] <= 96, 'Bounded edit-region margin/feather required')
     require(1 <= kept['reference_min_px'] <= 512, 'Reference threshold must be 1-512 px')
+    require(1 <= kept['specimen_min_px'] <= 512, 'Specimen threshold must be 1-512 px')
     require(len(kept['input_size']) == 2 and all(256 <= v <= 4096 for v in kept['input_size']),
             'The image tool input size is two sides of 256-4096 px')
     return kept
@@ -346,9 +364,10 @@ def derive(review_path, records_path, params):
     min_px = kept['reference_min_px']
     check_reference_records(records, records_path.parent, set(meaningful_species(rows, min_px)[0]), min_px)
     refs = view_references(rows, records, records_path.parent, min_px)
-    job = {'id': JOB_ID, 'kind': 'full_view', 'box': box, 'input_size': input_dims(w, h, kept['input_size']),
+    size = input_dims(w, h, kept['input_size'])
+    job = {'id': JOB_ID, 'kind': 'full_view', 'box': box, 'input_size': size,
            'inventory': rows, 'references': refs,
-           'prompt_text': prompt(rows, records, layers['bed_on'], [w, h], bool(refs['species']))}
+           'prompt_text': prompt(rows, records, layers['bed_on'], [w, h], size, kept['specimen_min_px'], bool(refs['species']))}
     return {'review': record(review_path), 'records': record(records_path), 'composite': record(composite),
             'cleaned_photo': record(checked(proof['cleaned_photo'], fp.parent)), 'camera_id': view['camera_id'],
             'handoff': record(hp), 'dimensions': [w, h], 'baseline_status': result['status'],
@@ -456,9 +475,11 @@ if __name__ == '__main__':
                    help="The image tool's largest landscape size (default 1536 1024; swapped for portrait views)")
     a.add_argument('--reference-min-px', type=int,
                    help='A species gets a reference photo when an instance is at least this many px on both sides (default 48)')
+    a.add_argument('--specimen-min-px', type=int,
+                   help="Plants at least this many tool-input px on both sides are listed one by one; smaller ones as drifts (default 40)")
     a = p.parse_args()
     plan = prepare(a.finish_review, a.records, a.out, margin_px=a.margin, feather_px=a.feather,
-                   input_size=a.input_size, reference_min_px=a.reference_min_px)
+                   input_size=a.input_size, reference_min_px=a.reference_min_px, specimen_min_px=a.specimen_min_px)
     job = plan['jobs'][0]
     print(json.dumps({'plan': str(Path(a.out).resolve() / 'plan.json'), 'input': job['input']['path'],
                       'input_size': job['input_size'], 'prompt': job['prompt']['path'], 'plants': len(job['inventory']),
