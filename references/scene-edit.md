@@ -44,7 +44,7 @@ Each entry needs `common_name`, a plain-words `description` of habit and leaves,
 
 ### Reference photos
 
-Each species with an instance **at least 48 px on both sides** in the view (its visible bounding box, `--reference-min-px`) needs `reference_photos` or `reference_missing`. The plan fails with the names of any that lack both; smaller fragments may go without. Any entry that is given is checked.
+Each species with an instance **at least 100 px on both sides** in the view (its visible bounding box, `--reference-min-px`) needs `reference_photos` or `reference_missing`. The plan fails with the names of any that lack both; smaller fragments may go without. Any entry that is given is checked.
 
 ```json
 "Agave parryi var. truncata": {"common_name": "artichoke agave", "description": "...", "bloom_exempt": "...",
@@ -55,18 +55,19 @@ Each species with an instance **at least 48 px on both sides** in the view (its 
      "accessed": "2026-10-31",
      "identification": "Missouri Botanical Garden, Agave parryi var. truncata",
      "cultivar_match": "exact",
+     "shows": "whole_plant",
      "usage_note": "mature rosette in full sun; leaf shape and colour, ignore the gravel bed"}]},
 "Lomandra 'Platinum Beauty'": {"...": "...",
   "reference_missing": "no identified photo of the cultivar or species found at a garden, university, herbarium or nursery"}
 ```
 
-- Find a real photograph whose identification you can cite: a botanical garden, university or extension service, herbarium, or a nursery that names the exact plant. Prefer the exact cultivar (`cultivar_match: "exact"`); otherwise the species (`"species"`, captioned "species photo" on the sheet). Prefer a whole plant in its usual habit, in flower for flowering plants, with little else in the frame. The plant library's research records (`references[].image_url`) are a good first source.
+- Find a real photograph whose identification you can cite: a botanical garden, university or extension service, herbarium, or a nursery that names the exact plant. Prefer the exact cultivar (`cultivar_match: "exact"`); otherwise the species (`"species"`, captioned "species photo" on the sheet). Give each species at least one whole-plant photo of a mature specimen in its usual habit (the whole rosette, clump or shrub, in flower for flowering plants, with little else in the frame); leaf and flower close-ups may be added but are never the only photo. In lab P11/P12 whole-plant photos on a 9-species sheet cut species changes from 12 to 7 over four runs at the same realness. The plant library's research records (`references[].image_url`) are a good first source.
 - Download it into the scene work folder next to `RECORDS.json` (for example `WORK/references/`) and record `path` relative to `RECORDS.json`. The plan rejects absolute paths, paths outside that folder and paths inside the shared plant library (`PACIFICA_ASSETS_DIR`).
-- Record `source_page` and `image_url` (http/https), `accessed` (YYYY-MM-DD), `identification`, `cultivar_match` and a short `usage_note`.
+- Record `source_page` and `image_url` (http/https), `accessed` (YYYY-MM-DD), `identification`, `cultivar_match`, `shows` (`whole_plant`, `leaf`, `flower` or `detail`; it defaults to `whole_plant`, so set it honestly on every close-up) and a short `usage_note`.
 - The photos are **model input only**. Never copy them into deliverables, galleries or the shared plant library.
 - No usable photo: record `reference_missing` with the reason. That species is described by its records text only.
 
-When a species has several photos, the sheet shows its first whole-plant photo (`shows`, default `whole_plant`), preferring an `exact` one, else the first `exact`, else the first.
+When a species has several photos, the sheet shows a whole-plant photo first, the exact cultivar before the species, and otherwise the first listed.
 
 ## 2. Freeze the plan
 
