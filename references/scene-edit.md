@@ -44,7 +44,7 @@ Each entry needs `common_name`, a plain-words `description` of habit and leaves,
 
 ### Reference photos
 
-Each species with an instance **at least 48 px on both sides** in the view (its visible bounding box, `--reference-min-px`) needs `reference_photos` or `reference_missing`. The plan fails with the names of any that lack both; smaller fragments may go without. Any entry that is given is checked.
+Each species with an instance **at least 100 px on both sides** in the view (its visible bounding box, `--reference-min-px`) needs `reference_photos` or `reference_missing`. The plan fails with the names of any that lack both; smaller fragments may go without. Any entry that is given is checked.
 
 ```json
 "Agave parryi var. truncata": {"common_name": "artichoke agave", "description": "...", "bloom_exempt": "...",
@@ -55,18 +55,19 @@ Each species with an instance **at least 48 px on both sides** in the view (its 
      "accessed": "2026-10-31",
      "identification": "Missouri Botanical Garden, Agave parryi var. truncata",
      "cultivar_match": "exact",
+     "shows": "whole_plant",
      "usage_note": "mature rosette in full sun; leaf shape and colour, ignore the gravel bed"}]},
 "Lomandra 'Platinum Beauty'": {"...": "...",
   "reference_missing": "no identified photo of the cultivar or species found at a garden, university, herbarium or nursery"}
 ```
 
-- Find a real photograph whose identification you can cite: a botanical garden, university or extension service, herbarium, or a nursery that names the exact plant. Prefer the exact cultivar (`cultivar_match: "exact"`); otherwise the species (`"species"`, captioned "species photo" on the sheet). Prefer a whole plant in its usual habit, in flower for flowering plants, with little else in the frame. The plant library's research records (`references[].image_url`) are a good first source.
+- Find a real photograph whose identification you can cite: a botanical garden, university or extension service, herbarium, or a nursery that names the exact plant. Prefer the exact cultivar (`cultivar_match: "exact"`); otherwise the species (`"species"`, captioned "species photo" on the sheet). Give each species at least one whole-plant photo of a mature specimen in its usual habit (the whole rosette, clump or shrub, in flower for flowering plants, with little else in the frame); leaf and flower close-ups may be added but are never the only photo. In lab P11/P12 whole-plant photos on a 9-species sheet cut species changes from 12 to 7 over four runs at the same realness. The plant library's research records (`references[].image_url`) are a good first source.
 - Download it into the scene work folder next to `RECORDS.json` (for example `WORK/references/`) and record `path` relative to `RECORDS.json`. The plan rejects absolute paths, paths outside that folder and paths inside the shared plant library (`PACIFICA_ASSETS_DIR`).
-- Record `source_page` and `image_url` (http/https), `accessed` (YYYY-MM-DD), `identification`, `cultivar_match` and a short `usage_note`.
+- Record `source_page` and `image_url` (http/https), `accessed` (YYYY-MM-DD), `identification`, `cultivar_match`, `shows` (`whole_plant`, `leaf`, `flower` or `detail`; it defaults to `whole_plant`, so set it honestly on every close-up) and a short `usage_note`.
 - The photos are **model input only**. Never copy them into deliverables, galleries or the shared plant library.
 - No usable photo: record `reference_missing` with the reason. That species is described by its records text only.
 
-When a species has several photos, the sheet shows the first `exact` one (else the first).
+When a species has several photos, the sheet shows a whole-plant photo first, the exact cultivar before the species, and otherwise the first listed.
 
 ## 2. Freeze the plan
 
@@ -78,7 +79,7 @@ The plan (schema 5) re-verifies the previous composite and writes `SCENE_DIR/pla
 
 - `input.png`: the whole 8-bit composite, Lanczos-reduced to fit the image tool's largest size for the view's orientation (`--input-size`, default 1536x1024 landscape, 1024x1536 portrait; never upscaled). The job records `input_size`.
 - `prompt.txt`: the whole-view prompt (below).
-- `references.jpg`: a labelled contact sheet of the view's reference photos, one per species, captioned with the botanical and common name. It lists the species at least `reference_min_px` (48) px on both sides that have `reference_photos`, largest visible pixel area first, at most 16, with a long edge of at most 2048 px. The job's `references` records the threshold, each shown species (`species`, `common_name`, `pixel_area`, the hashed `photo`, `identification`, `cultivar_match`, `source_page`, `image_url`, `accessed`), the species left off (`omitted`, with reason `below_threshold`, `reference_missing` or `sheet_cap`) and the hashed `sheet`.
+- `references.jpg`: a labelled contact sheet of the view's reference photos, one per species, captioned with the botanical and common name. It lists the species at least `reference_min_px` (100) px on both sides (about 40 px in the 1536 px tool input of a 3840 px view) that have `reference_photos`, largest visible pixel area first, at most 9 (a 3x3 sheet, so each photo is large enough to show the plant's habit), with a long edge of at most 2048 px. Each species shows one photo: a whole-plant photo first, then the exact cultivar. A reference photo may say what it `shows`: `whole_plant` (the default), `leaf`, `flower` or `detail`. The job's `references` records the threshold, each shown species (`species`, `common_name`, `pixel_area`, the hashed `photo`, `shows`, `identification`, `cultivar_match`, `source_page`, `image_url`, `accessed`), the species left off (`omitted`, with reason `below_threshold`, `reference_missing` or `sheet_cap`) and the hashed `sheet`.
 
 The prompt holds what keeps the design: one pass over the entire view; same camera, framing, perspective and light; hardscape kept in place with identical geometry (no added, removed, moved or doubled joints, edges, steps, walls or gravel strips); bed ground shredded bark mulch when the bed-ground pass is on; every plant rooted in its bed; no new pots, steps, paving, structures, text or plants in empty bed ground; the house, sky, street and neighbourhood unchanged; every plant where it is as its listed species and form (natural leaf movement, fuller foliage and a natural outline are fine; never remove, replace or merge a plant); no invented hybrid foliage; every flowering plant in full bloom. Then one line per species, largest first: botanical name (common name; description); flowers; how many plants are visible and where, on a 3x3 grid of the view (`left`, `centre`, `right` × `background`, `middle ground`, `foreground`, from each plant's renderer-ID bounding-box centre), for example `3 plants: left foreground 2, centre middle ground 1`. With a sheet, the prompt names the composite the first image and adds: "The second supplied image is a labelled sheet of real photographs of the species in this view, for identification only: match each listed plant's leaves, habit and flowers to its photo; do not copy the photo's composition, background or extra plants into the scene." Prompts are deterministic and `validate` re-derives them, so don't edit a planned prompt.
 
