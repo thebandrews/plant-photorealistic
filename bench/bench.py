@@ -7,6 +7,8 @@
   python bench/bench.py --bench DIR judge ID              vision judge: realism per crop, species consistency
   python bench/bench.py --bench DIR score ID              gate + judge + summary (scores.json)
   python bench/bench.py --bench DIR board                 leaderboard page (experiments/board/index.html)
+  python bench/bench.py --bench DIR plantcheck VIEW LABEL=IMAGE ... --out REPORT.json
+                                                          per-plant species / movement / additions (plantcheck.py)
 
 An experiment is a folder experiments/<ID>/ with experiment.json, out/<view>.png at full size, and run.json
 (gpu_seconds, codex_turns, notes). Experiments never write to the bench. See bench/README.md.
@@ -426,6 +428,27 @@ def cmd_board(bench, args):
     print(path)
 
 
+def cmd_plantcheck(bench, args):
+    """Per-plant ranked defects for any delivered images of one view; the render itself is checked first as a
+    control (it must report none)."""
+    import plantcheck as pc
+    view = bench.view(args.view)
+    clf = pc.BioClip()
+    ref = view.naive_composite()
+    images = [('render', None)] + [tuple(a.split('=', 1)) for a in args.images]
+    report, ref_probs = {'view': view.id, 'model': pc.BioClip.MODEL, 'images': {}}, None
+    for label, path in images:
+        out = ref if path is None else bl.load_rgb(path)
+        if out.shape != ref.shape:
+            raise SystemExit(f'{label}: {out.shape[1]}x{out.shape[0]} differs from the view {ref.shape[1]}x{ref.shape[0]}')
+        res, ref_probs = pc.check(view, out, clf, ref=ref, ref_probs=ref_probs)
+        res['image'] = None if path is None else str(Path(path).resolve())
+        res['image_sha256'] = None if path is None else bl.sha256(path)
+        report['images'][label] = res
+        print(label, json.dumps(res['summary']), flush=True)
+    bl.write_json(args.out, report)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--bench', default=os.environ.get('PHOTOREAL_BENCH'))
@@ -444,10 +467,13 @@ def main(argv=None):
     p = sub.add_parser('impression'); p.add_argument('id'); p.add_argument('--passes', type=int, default=2)
     p = sub.add_parser('pairwise'); p.add_argument('id'); p.add_argument('--passes', type=int, default=2)
     sub.add_parser('board')
+    p = sub.add_parser('plantcheck'); p.add_argument('view'); p.add_argument('images', nargs='+', metavar='LABEL=IMAGE')
+    p.add_argument('--out', required=True)
     args = ap.parse_args(argv)
     bench = bl.Bench(args.bench)
     {'init-crops': cmd_init_crops, 'baselines': cmd_baselines, 'new': cmd_new, 'gate': cmd_gate,
-     'judge': cmd_judge, 'pairwise': cmd_pairwise, 'impression': cmd_impression, 'score': cmd_score, 'board': cmd_board}[args.cmd](bench, args)
+     'judge': cmd_judge, 'pairwise': cmd_pairwise, 'impression': cmd_impression, 'score': cmd_score, 'board': cmd_board,
+     'plantcheck': cmd_plantcheck}[args.cmd](bench, args)
 
 
 if __name__ == '__main__':

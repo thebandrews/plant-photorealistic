@@ -263,3 +263,43 @@ def test_goal_needs_realistic_share_and_no_toys(tiny, monkeypatch):
     bl.write_json(d / 'judge.json', judged)
     s = bb.summarize(d)
     assert s['impression_toys'] == ['v1-ground-01'] and s['goal_met'] is False
+
+
+class _FakeSpecies:
+    """Stands in for BioCLIP: a crop whose centre is grey reads as the first name (form or species), anything else
+    mostly as the second."""
+    def probs(self, crops, names):
+        out = []
+        for c in crops:
+            r, g, b = c[c.shape[0] // 2, c.shape[1] // 2].astype(int)
+            row = np.zeros(len(names))
+            if abs(r - g) < 15 and r > 150:
+                row[0] = 1.0
+            else:
+                row[0], row[1] = 0.2, 0.8
+            out.append(row)
+        return np.array(out)
+
+
+def test_plantcheck_ranked_defects(tiny, monkeypatch):
+    import plantcheck as pc
+    monkeypatch.setitem(pc.T, 'min_pixels', 1000); monkeypatch.setitem(pc.T, 'min_side', 30)
+    monkeypatch.setitem(pc.T, 'addition_px', 500); monkeypatch.setitem(pc.T, 'plant_clear_px', 21)
+    v = tiny.view('v1')
+    ref = v.naive_composite()
+    res, probs = pc.check(v, ref, _FakeSpecies(), ref=ref)
+    assert res['summary'] == {'checked': 2, 'species_judged': 2, 'species_change': 0, 'significant_movement': 0,
+                              'invented_plant': 0}                      # the render against itself: nothing
+    moved = ref.copy()
+    moved[120:170, 150:200] = ref[120:170, 135:185]                     # plant 2 shifted 15 px right
+    moved[120:170, 165:215] = ref[120:170, 150:200]
+    res, _ = pc.check(v, moved, _FakeSpecies(), ref=ref, ref_probs=probs)
+    row = next(r for r in res['plants'] if r['id'] == 'P-2')
+    assert row['significant_movement'] and row['shift_px'] == [15, 0], json.dumps(row)
+    assert res['summary']['significant_movement'] == 1 and res['summary']['species_change'] == 0
+    swapped = ref.copy()
+    swapped[120:170, 150:200] = (205, 205, 200)                         # plant 2 replaced by something grey
+    swapped[155:185, 100:130] = (40, 170, 40)                           # a new green plant on open bed ground
+    res, _ = pc.check(v, swapped, _FakeSpecies(), ref=ref, ref_probs=probs)
+    assert [r['id'] for r in res['plants'] if r['species_change']] == ['P-2']
+    assert res['summary']['invented_plant'] == 1 and res['additions'][0]['pixels'] == 900
