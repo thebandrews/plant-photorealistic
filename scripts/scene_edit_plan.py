@@ -124,6 +124,23 @@ def check_records(records, species):
                 'Plant records need a common name and plain habit/leaf description for ' + name)
         require(bool(r.get('flowers')) != bool(r.get('bloom_exempt')),
                 'Give the in-bloom flowers, or the recorded bloom exemption reason, for ' + name)
+        for alike in r.get('look_alikes', []):
+            require(isinstance(alike, dict) and alike.get('species') in records['species'] and alike['species'] != name
+                    and isinstance(alike.get('difference'), str) and alike['difference'].strip(),
+                    'Each look_alikes entry of ' + name + ' names another recorded species and the visible difference')
+
+
+def look_alikes(name, records, present):
+    """The look-alikes of a species that are in the view (named either way round): [(other, difference)]."""
+    out = {}
+    for alike in records['species'][name].get('look_alikes', []):
+        if alike['species'] in present:
+            out[alike['species']] = alike['difference'].strip().rstrip('.')
+    for other in sorted(present):
+        for alike in records['species'].get(other, {}).get('look_alikes', []):
+            if alike['species'] == name and other not in out:
+                out[other] = ''
+    return sorted(out.items())
 
 
 def meaningful_species(rows, min_px):
@@ -193,9 +210,12 @@ def check_reference_records(records, records_dir, required, min_px):
 
 
 def view_references(rows, records, records_dir, min_px):
-    """The species references of the view: which species appear on its sheet (largest area first, one photo each, the
-    whole-plant photo first, then the exact cultivar), and which are left off and why."""
+    """The species references of the view: which species appear on its sheet (species with a look-alike in the view
+    first, then largest area first; one photo each, the whole-plant photo first, then the exact cultivar), and which
+    are left off and why."""
     big, small, area = meaningful_species(rows, min_px)
+    present = {r['species'] for r in rows}
+    big.sort(key=lambda n: not look_alikes(n, records, present))  # look-alike pairs first (stable: largest first)
     shown, omitted = [], [{'species': n, 'reason': 'below_threshold', 'pixel_area': area[n]} for n in small]
     for name in big:
         r = records['species'][name]
@@ -266,14 +286,15 @@ def reference_sheet(entries, base=None):
     return np.array(sheet)
 
 
-def species_line(name, record_, rows):
+def species_line(name, record_, rows, alikes=()):
     flowers = record_['flowers'] if record_.get('flowers') else 'none required; preserve foliage'
+    contrast = ''.join(f" Not the {common}: {diff}." for common, diff in alikes if diff)
     where = {}
     for r in rows:
         where[r['location']] = where.get(r['location'], 0) + 1
     places = ', '.join(f'{loc} {n}' for loc, n in sorted(where.items(), key=lambda kv: (-kv[1], kv[0])))
     count = len(rows)
-    return (f"{name} ({record_['common_name']}; {record_['description']}); flowers: {flowers}. "
+    return (f"{name} ({record_['common_name']}; {record_['description']}); flowers: {flowers}.{contrast} "
             f"{count} plant{'s' if count != 1 else ''}: {places}")
 
 
@@ -290,7 +311,10 @@ def prompt(rows, records, mulch, sheet=False):
         if r['species'] not in order:
             order.append(r['species'])
     order.sort(key=lambda s: (-sum(r['visible_pixels'] for r in rows if r['species'] == s), s))  # largest first
-    lines = [species_line(s, records['species'][s], [r for r in rows if r['species'] == s]) for s in order]
+    present = set(order)
+    lines = [species_line(s, records['species'][s], [r for r in rows if r['species'] == s],
+                          [(records['species'][o]['common_name'], d) for o, d in look_alikes(s, records, present)])
+             for s in order]
     if not lines:
         lines = ['No designed plant is visible in this view; refine only bed, ground and hardscape surfaces.']
     return text + '\n' + '\n'.join(lines) + '\n'
