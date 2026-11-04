@@ -236,6 +236,33 @@ class SceneEditReferences(PlanFixture):
         self.assertIn('Edit target: the supplied image', text_of(job['prompt']['path']))
         validate(plan, self.p)
 
+    def test_look_alikes_contrast_the_prompt_and_lead_the_sheet(self):
+        def pair(r):
+            r['look_alikes'] = [{'species': 'Synthetic tiny cultivar', 'difference': 'stiff white-marked rosette, never a daisy mound.'}]
+        plan = self.plan_with(pair, 'look-alikes')
+        text = text_of(plan['jobs'][0]['prompt']['path'])
+        self.assertIn('flowers: none required; preserve foliage. Not the tiny daisy: stiff white-marked rosette, never a '
+                      'daisy mound. 1 plant:', text)
+        self.assertNotIn('Not the Queen Victoria agave', text)  # the difference is written once, on the species that has it
+        validate(plan, self.p)
+        for i, bad in enumerate(({'species': 'Agave victoriae-reginae', 'difference': 'x'}, {'species': 'Nowhere', 'difference': 'x'},
+                    {'species': 'Synthetic tiny cultivar', 'difference': ' '})):
+            with self.assertRaisesRegex(ValueError, 'look_alikes'):
+                self.plan_with(lambda r, bad=bad: r.update(look_alikes=[bad]), f'bad-alike-{i}')
+        # On a full sheet, a small species with a look-alike in the view comes before larger ones without.
+        records = {'species': {}}
+        rows = []
+        for k in range(12):
+            name = f'Species {k:02d}'
+            rows.append({'species': name, 'visible_pixels': 1000 * (k + 1), 'size_px': [64, 64]})
+            records['species'][name] = {'common_name': f'plant {k}', 'reference_photos': [
+                {'path': 'refs/agave-species.png', 'cultivar_match': 'species', 'identification': 'x',
+                 'source_page': 'https://e.org/p', 'image_url': 'https://e.org/i.jpg', 'accessed': '2026-10-31'}]}
+        records['species']['Species 00']['look_alikes'] = [{'species': 'Species 01', 'difference': 'thinner leaves'}]
+        shown = [e['species'] for e in view_references(rows, records, self.p, 48)['species']]
+        self.assertEqual(shown[:2], ['Species 01', 'Species 00'])
+        self.assertEqual(shown[2:], [f'Species {k:02d}' for k in range(11, 4, -1)])
+
     def test_reference_records_are_validated(self):
         with self.assertRaisesRegex(ValueError, 'Give reference_photos'):
             self.plan_with(lambda r: r.pop('reference_photos'), 'no-ref')

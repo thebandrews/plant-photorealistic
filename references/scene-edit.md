@@ -66,6 +66,7 @@ Each species with an instance **at least 100 px on both sides** in the view (its
 - Record `source_page` and `image_url` (http/https), `accessed` (YYYY-MM-DD), `identification`, `cultivar_match`, `shows` (`whole_plant`, `leaf`, `flower` or `detail`; it defaults to `whole_plant`, so set it honestly on every close-up) and a short `usage_note`.
 - The photos are **model input only**. Never copy them into deliverables, galleries or the shared plant library.
 - No usable photo: record `reference_missing` with the reason. That species is described by its records text only.
+- **Look-alikes.** When the edit could mistake a species for another designed species in the same view (at the 1536 px input size: an agave and a strap-leaved clump, a dwarf pine and a fern, a striped and a plain fern), give it `look_alikes`: `[{"species": "<the other recorded species>", "difference": "<the visible difference, in a few words>"}]`, for example `{"species": "Aspidistra elatior", "difference": "toothed, spine-tipped rosette, never smooth strap leaves"}`. The prompt adds "Not the <other common name>: <difference>." to the species' line, and species with a look-alike in the view go on the reference sheet first, so both members of a pair are shown. Use earlier reviews' species changes (what became what) as the first source of pairs.
 
 When a species has several photos, the sheet shows a whole-plant photo first, the exact cultivar before the species, and otherwise the first listed.
 
