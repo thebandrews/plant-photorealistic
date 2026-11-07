@@ -12,10 +12,11 @@ import re
 
 REASON = 'monocarpic: not shown in bloom'
 
-GENERA = ('Agave', 'Mangave', 'Furcraea', 'Puya', 'Hesperoyucca', 'Sempervivum', 'Aeonium',
+GENERA = ('Agave', 'Mangave', 'Furcraea', 'Puya', 'Hesperoyucca', 'Ensete', 'Sempervivum', 'Aeonium',
           'Aechmea', 'Guzmania', 'Neoregelia', 'Vriesea', 'Tillandsia')
 # Species in mixed genera (binomial -> monocarpic). These win over the genus default.
-SPECIES = {'Echium wildpretii': True, 'Echium pininana': True, 'Echium candicans': False,
+SPECIES = {'Agave bracteosa': False, 'Agave tuberosa': False,
+           'Echium wildpretii': True, 'Echium pininana': True, 'Echium candicans': False,
            'Yucca whipplei': True,
            'Kalanchoe luciae': True, 'Kalanchoe thyrsiflora': True, 'Kalanchoe daigremontiana': True,
            'Kalanchoe delagoensis': True, 'Kalanchoe tubiflora': True}

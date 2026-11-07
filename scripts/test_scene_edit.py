@@ -200,6 +200,11 @@ class SceneEditPlan(PlanFixture):
         for taxon in ('Echium candicans', 'Yucca rostrata', 'Kalanchoe blossfeldiana', 'Digitalis purpurea',
                       'Papaver somniferum', 'Echium vulgare', 'Salvia nemorosa'):
             self.assertFalse(monocarpic.is_monocarpic(taxon), taxon)
+        # Ben 2026-11-06: polycarpic agaves are shown in bloom; Ensete is monocarpic (genus).
+        for taxon in ('Agave bracteosa', "Agave bracteosa 'Calamar'", 'Agave tuberosa', 'Polianthes tuberosa'):
+            self.assertFalse(monocarpic.is_monocarpic(taxon), taxon)
+        for taxon in ('Ensete ventricosum', "Ensete ventricosum 'Maurelii'", 'Ensete glaucum'):
+            self.assertTrue(monocarpic.is_monocarpic(taxon), taxon)
         self.assertFalse(monocarpic.is_monocarpic('Agave parryi', override=False))
         self.assertTrue(monocarpic.is_monocarpic('Salvia nemorosa', override=True))
 
