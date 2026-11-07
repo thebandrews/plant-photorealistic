@@ -157,6 +157,14 @@ def test_bloom_items_and_qualification(tiny, monkeypatch):
     assert bb.summarize(d)['qualified'] is True
 
 
+def test_monocarpic_species_never_count_toward_bloom(tiny):
+    # Even when bloom.json lists flowers for it, a monocarpic species (Agave) is never checked for bloom.
+    bl.write_json(tiny.root / 'bloom.json', {'bloom': {'Salvia nemorosa': 'rose-magenta spikes',
+                                                       'Agave montana': 'tall yellow flower stalk'}})
+    v = tiny.view('v1')
+    assert [i['species'] for i in bb._bloom_items(tiny, v, v.baseline_final)] == ['Salvia nemorosa']
+
+
 def test_invented_plants_disqualify(tiny, monkeypatch):
     monkeypatch.setenv('PHOTOREAL_EXPERIMENTS', str(tiny.root.parent / 'exps'))
     d = bb.new_experiment(tiny, 'E4', 'D', 'h', 'm')

@@ -22,7 +22,7 @@ The bench folder holds client imagery, so it lives outside every repo:
 | `views/<v>/baseline-run/` | the shipped run's refined render: `straight_rgb.png` + `alpha.png` (landscape layer), its IDs/depth, `transition_alpha.png`, cleanup masks |
 | `views/<v>/baseline/final.png` | the shipped composite (X0-final) |
 | `anchors/real/` | crops of the project's other site photos: real photographs for judge calibration |
-| `bloom.json` | flowering species and the flowers each should show; exempt species and why |
+| `bloom.json` | flowering species and the flowers each should show; exempt species and why (monocarpic species, `scripts/monocarpic.py`, are never checked for bloom even if listed) |
 | `crops.json` | the fixed judge crops (frozen; never re-chosen once experiments are scored) |
 
 Experiments live next to the bench in `experiments/` (or `PHOTOREAL_EXPERIMENTS`).
