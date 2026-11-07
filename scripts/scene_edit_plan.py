@@ -24,6 +24,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from handoff import checked, read, record, require
+import monocarpic
 from raster import load, save
 
 KIND = 'scene_photographic_edit_plan'
@@ -60,6 +61,10 @@ FULL_PREAMBLE = (
     "remove, replace or merge a plant. No invented hybrid foliage. Every flowering plant is in full bloom, true to its "
     "cultivar. The planting, by species, with how many plants are visible and where they are in the view (left, centre "
     "or right; background, middle ground or foreground):")
+# Monocarpic plants (monocarpic.py) die after flowering and are never shown in bloom (Ben, 2026-11-06).
+MONOCARPIC_FLOWERS = 'none; it dies after flowering, so never give it a flower stalk, spike or inflorescence'
+MONOCARPIC_BLOOM = ('Every flowering plant is in full bloom, true to its cultivar, except the plants listed as dying '
+                    'after flowering: never give those a flower stalk, spike or inflorescence.')
 MULCH = 'Ground inside beds is shredded bark mulch.'
 NO_MULCH = 'Ground inside beds keeps its existing designed material.'
 HARDSCAPE = 'concrete, steps, walls, planters, edging and the house'
@@ -124,6 +129,13 @@ def check_records(records, species):
                 'Plant records need a common name and plain habit/leaf description for ' + name)
         require(bool(r.get('flowers')) != bool(r.get('bloom_exempt')),
                 'Give the in-bloom flowers, or the recorded bloom exemption reason, for ' + name)
+        require(not is_monocarpic(name, r) or not r.get('flowers'),
+                monocarpic.REASON + ': give the bloom_exempt reason, not flowers, for ' + name)
+
+
+def is_monocarpic(name, record_):
+    """A species record's explicit `monocarpic` flag, else the curated list."""
+    return monocarpic.is_monocarpic(name, record_.get('monocarpic'))
 
 
 def meaningful_species(rows, min_px):
@@ -267,7 +279,10 @@ def reference_sheet(entries, base=None):
 
 
 def species_line(name, record_, rows):
-    flowers = record_['flowers'] if record_.get('flowers') else 'none required; preserve foliage'
+    if is_monocarpic(name, record_):
+        flowers = MONOCARPIC_FLOWERS
+    else:
+        flowers = record_['flowers'] if record_.get('flowers') else 'none required; preserve foliage'
     where = {}
     for r in rows:
         where[r['location']] = where.get(r['location'], 0) + 1
@@ -291,6 +306,8 @@ def prompt(rows, records, mulch, sheet=False):
             order.append(r['species'])
     order.sort(key=lambda s: (-sum(r['visible_pixels'] for r in rows if r['species'] == s), s))  # largest first
     lines = [species_line(s, records['species'][s], [r for r in rows if r['species'] == s]) for s in order]
+    if any(is_monocarpic(s, records['species'][s]) for s in order):
+        text = text.replace('Every flowering plant is in full bloom, true to its cultivar.', MONOCARPIC_BLOOM, 1)
     if not lines:
         lines = ['No designed plant is visible in this view; refine only bed, ground and hardscape surfaces.']
     return text + '\n' + '\n'.join(lines) + '\n'
