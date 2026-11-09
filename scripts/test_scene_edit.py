@@ -12,10 +12,11 @@ import numpy as np
 from PIL import Image
 
 from appearance_guard import check
+import monocarpic
 from handoff import record
 from raster import load, save as save_png
 from scene_edit_compose import (CHECK_SET, COMPARE_WIDTH, OPERATION, REAL_FAILURE_CHECKS, compose, side_by_side, verify)
-from scene_edit_plan import (JOB_ID, REFERENCE_LINE, REFERENCE_SHEET_LONG_EDGE, input_dims, location, meaningful_species,
+from scene_edit_plan import (JOB_ID, MONOCARPIC_BLOOM, MONOCARPIC_FLOWERS, REFERENCE_LINE, prompt, REFERENCE_SHEET_LONG_EDGE, input_dims, location, meaningful_species,
                              prepare, reference_sheet, region_weight, edit_region, resized, validate, view_references)
 from test_contract import save
 import test_finishing
@@ -167,6 +168,45 @@ class SceneEditPlan(PlanFixture):
         save(self.p / 'both.json', records)
         with self.assertRaisesRegex(ValueError, 'bloom exemption'):
             prepare(self.p / 'finish-review.json', self.p / 'both.json', self.p / 'bad2', **PARAMS)
+
+    def test_monocarpic_plants_are_never_shown_in_bloom(self):
+        text = text_of(self.job['prompt']['path'])
+        self.assertIn(MONOCARPIC_BLOOM, text)  # the view has an agave
+        self.assertNotIn('Every flowering plant is in full bloom, true to its cultivar.', text)
+        agave = next(line for line in text.splitlines() if line.startswith('Agave victoriae-reginae'))
+        self.assertIn('flowers: ' + MONOCARPIC_FLOWERS + '.', agave)
+        tiny = next(line for line in text.splitlines() if line.startswith('Synthetic tiny cultivar'))
+        self.assertIn('flowers: many small white daisies', tiny)
+        # No monocarpic species in view: the preamble is unchanged.
+        rows = [r for r in self.job['inventory'] if r['species'] == 'Synthetic tiny cultivar']
+        self.assertIn('Every flowering plant is in full bloom, true to its cultivar.', prompt(rows, RECORDS, True))
+        # The plan refuses in-bloom flowers for a monocarpic species, unless its record says it is not monocarpic.
+        records = copy.deepcopy(RECORDS); agave_record = records['species']['Agave victoriae-reginae']
+        agave_record['flowers'] = agave_record.pop('bloom_exempt').replace('monocarpic agave', 'tall yellow spike')
+        save(self.p / 'agave-bloom.json', records)
+        with self.assertRaisesRegex(ValueError, 'monocarpic: not shown in bloom'):
+            prepare(self.p / 'finish-review.json', self.p / 'agave-bloom.json', self.p / 'bad-agave', **PARAMS)
+        agave_record['monocarpic'] = False
+        save(self.p / 'agave-override.json', records)
+        plan = prepare(self.p / 'finish-review.json', self.p / 'agave-override.json', self.p / 'agave-override', **PARAMS)
+        self.assertIn('flowers: tall yellow spike', text_of(plan['jobs'][0]['prompt']['path']))
+
+    def test_monocarpic_classification(self):
+        for taxon in ("Agave americana 'Gainesville Blue'", "Agave x 'Snow Glow'", "x Mangave 'Moonglow'",
+                      "Sempervivum 'Royal Ruby'", 'Aeonium arboreum', 'Puya alpestris', 'Furcraea foetida',
+                      'Hesperoyucca whipplei', 'Yucca whipplei', 'Echium wildpretii', 'Echium pininana',
+                      'Kalanchoe luciae', 'Kalanchoe thyrsiflora', 'Neoregelia carolinae', 'Tillandsia cyanea'):
+            self.assertTrue(monocarpic.is_monocarpic(taxon), taxon)
+        for taxon in ('Echium candicans', 'Yucca rostrata', 'Kalanchoe blossfeldiana', 'Digitalis purpurea',
+                      'Papaver somniferum', 'Echium vulgare', 'Salvia nemorosa'):
+            self.assertFalse(monocarpic.is_monocarpic(taxon), taxon)
+        # Ben 2026-11-06: polycarpic agaves are shown in bloom; Ensete is monocarpic (genus).
+        for taxon in ('Agave bracteosa', "Agave bracteosa 'Calamar'", 'Agave tuberosa', 'Polianthes tuberosa'):
+            self.assertFalse(monocarpic.is_monocarpic(taxon), taxon)
+        for taxon in ('Ensete ventricosum', "Ensete ventricosum 'Maurelii'", 'Ensete glaucum'):
+            self.assertTrue(monocarpic.is_monocarpic(taxon), taxon)
+        self.assertFalse(monocarpic.is_monocarpic('Agave parryi', override=False))
+        self.assertTrue(monocarpic.is_monocarpic('Salvia nemorosa', override=True))
 
     def test_failed_previous_composite_cannot_be_planned(self):
         review = copy.deepcopy(self.fin.review); review['photo_review']['checks']['natural_plant_anatomy'] = 'fail'
@@ -378,13 +418,16 @@ class SceneEditCompose(PlanFixture):
             'result': 'concern', 'where': 'front step, left', 'observation': 'Synthetic flower growing from the tread.'}
         review['scene_review']['defects'] = [
             {'type': 'extent_change', 'where': 'left agave', 'observation': 'crown about 10% wider'},
-            {'type': 'invented_plant', 'where': 'bed edge, centre', 'observation': 'synthetic'}]
-        review['scene_review']['defect_count'] = 2
+            {'type': 'invented_plant', 'where': 'bed edge, centre', 'observation': 'synthetic'},
+            {'type': 'flower_stalk_added', 'where': 'left agave', 'observation': 'synthetic flower stalk on a monocarpic plant'}]
+        review['scene_review']['defect_count'] = 3
         result = check(review, self.p)
         self.assertEqual(result['status'], 'completed_with_limitations')
         self.assertEqual(result['delivered'], 'scene_edit_composite'); self.assertEqual(result['scene_edit_status'], 'delivered')
         self.assertEqual(result['real_failure_observations']['plants_rooted_in_beds'], 'concern')
-        self.assertEqual(result['defect_count'], 2)
+        self.assertEqual(result['defect_count'], 3)
+        self.assertIn({'check': 'defect: flower_stalk_added', 'blocking': False,
+                       'observations': 'left agave: synthetic flower stalk on a monocarpic plant'}, result['limitations'])
         self.assertEqual(result['limitations'][0], {'check': 'plants_rooted_in_beds', 'blocking': False,
                                                     'observations': 'front step, left: Synthetic flower growing from the tread.'})
         self.assertEqual(result['limitations'][1], {'check': 'defect: extent_change', 'blocking': False,

@@ -28,7 +28,10 @@ REVIEW_SCHEMA = 5
 # The four real failures, observed and recorded on the whole delivered view. They never block delivery.
 CHECK_SET = 'real_failures_observed_v1'
 REAL_FAILURE_CHECKS = ('plants_rooted_in_beds', 'hardscape_unchanged', 'no_seams_or_double_images', 'species_form_recognizable')
+# flower_stalk_added: a monocarpic plant (monocarpic.py) given a flower stalk, spike or inflorescence; bloom_missing
+# never counts monocarpic plants.
 DEFECT_TYPES = ('movement', 'extent_change', 'extra_foliage', 'invented_plant', 'cultivar_detail', 'bloom_missing',
+                'flower_stalk_added',
                 'colour_shift', 'other')
 COMPARE_WIDTH = 2400
 COMPARE_LABELS = ('Before: previous photo composite', 'After: scene photographic edit')

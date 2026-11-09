@@ -23,6 +23,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import benchlib as bl  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
+import monocarpic  # noqa: E402
 import crops as cr  # noqa: E402
 import gates as gt  # noqa: E402
 
@@ -204,8 +206,9 @@ def _species_pairs(bench, view, out):
 
 
 def _bloom_items(bench, view, out):
-    """The largest visible plant of each flowering species (bloom.json), biggest first."""
-    expected = (bench.bloom or {}).get('bloom', {})
+    """The largest visible plant of each flowering species (bloom.json), biggest first. Monocarpic species are
+    never shown in bloom, so they never count, even when bloom.json lists them."""
+    expected = {k: v for k, v in ((bench.bloom or {}).get('bloom', {})).items() if not monocarpic.is_monocarpic(k)}
     seen, items = set(), []
     for p in sorted(view.plants, key=lambda p: -p['pixels']):
         if p['species'] in expected and p['species'] not in seen and p['pixels'] >= BLOOM_MIN_PX:
